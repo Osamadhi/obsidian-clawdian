@@ -129,10 +129,18 @@ var ClawdianAPI = class {
   async chat(messages, onChunk, onThinking, abortSignal) {
     const parsedUrl = new URL(`${this.settings.gatewayUrl}/v1/chat/completions`);
     const token = this.getToken();
+    const isCustomModel = !!this.settings.selectedModel;
     const model = this.settings.selectedModel || "clawdbot:main";
+    // When using a custom model (not clawdbot:main), inject a system prompt
+    // since the Gateway won't load SOUL.md for direct model API calls
+    let apiMessages = messages;
+    if (isCustomModel) {
+      const sysPrompt = { role: "system", content: "You are Clawdian, an AI assistant in Obsidian. Be helpful, concise, and direct. Use Chinese by default. Use markdown formatting." };
+      apiMessages = [sysPrompt, ...messages.filter(m => m.role !== "system")];
+    }
     const body = JSON.stringify({
       model: model,
-      messages: messages,
+      messages: apiMessages,
       stream: true
     });
 
@@ -829,7 +837,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
     // Model selector dropdown
     const modelSelect = toolbarRight.createEl("select", { cls: "oc-model-select" });
     const models = [
-      { value: "", label: "Default" },
+      { value: "", label: "Default \u2728" },
       { value: "bailian/qwen3.5-plus", label: "Qwen3.5+" },
       { value: "bailian/kimi-k2.5", label: "Kimi K2.5" },
       { value: "zenmux-anthropic/anthropic/claude-opus-4.6", label: "Opus 4.6" },
@@ -1317,7 +1325,8 @@ var ClawdianView = class extends import_obsidian.ItemView {
     // Add to store & render
     if (!isResend) {
       this.plugin.conversationStore.addMessage(convId, "user", content, messageImages.length > 0 ? { images: messageImages } : undefined);
-      this.appendMessageEl("user", content);
+      const conv = this.plugin.conversationStore.getConversation(convId);
+      this.appendMessageEl("user", content, conv ? conv.messages.length - 1 : undefined);
     }
 
     this.startStreamingMessage();
@@ -1373,8 +1382,10 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
   autoResizeInput() {
     this.inputEl.style.height = "auto";
-    const maxH = Math.min(this.containerEl.clientHeight * 0.4, 400);
-    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, maxH) + "px";
+    const viewH = this.messagesEl?.parentElement?.clientHeight || this.containerEl.clientHeight || 600;
+    const maxH = Math.max(Math.min(viewH * 0.4, 400), 120);
+    const newH = Math.min(this.inputEl.scrollHeight, maxH);
+    this.inputEl.style.height = Math.max(newH, 40) + "px";
   }
 
   scrollToBottom() {

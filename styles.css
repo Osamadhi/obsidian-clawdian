@@ -193,7 +193,7 @@
 .oc-messages {
   flex: 1;
   overflow-y: auto;
-  padding: var(--oc-gap) 0;
+  padding: var(--oc-gap) 4px;
   display: flex;
   flex-direction: column;
   gap: var(--oc-gap);
@@ -284,21 +284,41 @@
   padding: 10px var(--oc-pad);
   border-radius: var(--oc-radius);
   max-width: 100%;
+  width: 100%;
   word-wrap: break-word;
   animation: oc-fadein 0.2s ease;
   position: relative;
 }
 
 .oc-message-user {
+  background: transparent;
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  padding-left: var(--oc-pad);
+  padding-right: var(--oc-pad);
+}
+
+.oc-message-user .oc-message-content {
   background: var(--background-secondary);
-  align-self: flex-end;
+  padding: 8px 12px;
+  border-radius: var(--oc-radius);
   border-bottom-right-radius: var(--oc-radius-sm);
-  max-width: 95%;
+  display: inline-block;
+  max-width: 100%;
+  float: right;
+  clear: both;
+}
+
+.oc-message-user .oc-message-content::after {
+  content: "";
+  display: table;
+  clear: both;
 }
 
 .oc-message-user::selection,
 .oc-message-user ::selection {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--text-selection);
   color: inherit;
 }
 
@@ -462,6 +482,7 @@
 
 .oc-role-user {
   text-align: right;
+  margin-right: 4px;
 }
 
 /* ============================================
@@ -480,6 +501,7 @@
 
 .oc-message-user .oc-message-actions {
   justify-content: flex-end;
+  clear: both;
 }
 
 .oc-action-btn {
@@ -1171,4 +1193,11 @@
 .oc-model-select option {
   background: var(--background-primary);
   color: var(--text-normal);
+}
+
+
+/* Fix user message float clearing */
+.oc-message-user .oc-msg-images {
+  clear: both;
+  float: right;
 }

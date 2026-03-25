@@ -690,7 +690,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     // Scroll to bottom button
     this.scrollBtnEl = messagesWrapper.createDiv({ cls: "oc-scroll-btn" });
-    this.setIconSafe(scrollBtnEl, "chevron-down");
+    setIconSafe(this.scrollBtnEl, "chevron-down");
     this.scrollBtnEl.addEventListener("click", () => this.scrollToBottom());
 
     this.messagesEl.addEventListener("scroll", () => {
@@ -794,7 +794,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       cls: "oc-toolbar-btn" + (this.plugin.settings.includeCurrentNote ? " active" : ""),
       attr: { "aria-label": "Include current note" }
     });
-    this.setIconSafe(noteToggleBtn, "file-text");
+    setIconSafe(this.noteToggleBtn, "file-text");
     this.noteToggleBtn.addEventListener("click", () => {
       this.plugin.settings.includeCurrentNote = !this.plugin.settings.includeCurrentNote;
       this.noteToggleBtn.toggleClass("active", this.plugin.settings.includeCurrentNote);
@@ -828,7 +828,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       cls: "oc-toolbar-btn oc-stop-btn",
       attr: { "aria-label": "Stop generating" }
     });
-    this.setIconSafe(stopBtn, "square");
+    setIconSafe(this.stopBtn, "square");
     this.stopBtn.style.display = "none";
     this.stopBtn.addEventListener("click", () => {
       if (this.abortController) this.abortController.abort();

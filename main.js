@@ -129,31 +129,9 @@ var ClawdianAPI = class {
   async chat(messages, onChunk, onThinking, abortSignal) {
     const parsedUrl = new URL(`${this.settings.gatewayUrl}/v1/chat/completions`);
     const token = this.getToken();
-    const isCustomModel = !!this.settings.selectedModel;
-    const model = isCustomModel ? this.settings.selectedModel : "clawdbot:main";
-    let apiMessages = messages;
-    if (isCustomModel) {
-      // Direct model API has no SOUL.md, inject system prompt for personality
-      const sysPrompt = {
-        role: "system",
-        content: `你是 Maya，Zorba 的 AI 技术搭档，运行在 Obsidian 笔记软件中。
-
-## 行为准则
-- 简体中文回复，代码/技术术语保持英文
-- 先结论后过程，简洁直接，不说客套话
-- Markdown 格式化输出
-- 不确定就说不确定，不编造
-
-## 能力
-- 你可以讨论技术、写代码、分析问题
-- 你没有工具调用能力（无法访问文件系统、搜索、执行命令）
-- 如果用户需要执行操作，建议他们切回 Default 模式或使用 WebChat`
-      };
-      apiMessages = [sysPrompt, ...messages.filter(m => m.role !== "system")];
-    }
     const body = JSON.stringify({
-      model: model,
-      messages: apiMessages,
+      model: "clawdbot:main",
+      messages: messages,
       stream: true
     });
 
@@ -240,7 +218,7 @@ var ClawdianAPI = class {
     const response = await (0, import_obsidian.requestUrl)({
       url, method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.settings.selectedModel || "clawdbot:main", messages: [{ role: "user", content: message }], stream: false })
+      body: JSON.stringify({ model: "clawdbot:main", messages: [{ role: "user", content: message }], stream: false })
     });
     if (response.status >= 400) throw new Error(`HTTP ${response.status}: ${response.text}`);
     return response.json?.choices?.[0]?.message?.content || "";
@@ -869,10 +847,16 @@ var ClawdianView = class extends import_obsidian.ItemView {
     }
     this.modelSelectEl = modelSelect;
     modelSelect.addEventListener("change", async () => {
-      this.plugin.settings.selectedModel = modelSelect.value;
-      await this.plugin.saveSettings();
-      const label = modelSelect.options[modelSelect.selectedIndex].text;
-      new import_obsidian.Notice(label);
+      const selectedValue = modelSelect.value;
+      const selectedLabel = modelSelect.options[modelSelect.selectedIndex].text;
+      if (!this.isStreaming) {
+        this.inputEl.value = selectedValue ? `/model ${selectedValue}` : `/model default`;
+        await this.sendMessage();
+        new import_obsidian.Notice(`Switching to ${selectedLabel}...`);
+      } else {
+        new import_obsidian.Notice("Wait for response to finish");
+        modelSelect.value = this.plugin.settings.selectedModel || "";
+      }
     });
 
     // Stop button (visible during streaming)

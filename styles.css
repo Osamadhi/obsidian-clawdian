@@ -1,5 +1,5 @@
-/* OpenClaw Obsidian Plugin v2 — styles.css */
-/* Inspired by Claudian's clean aesthetic, adapted for OpenClaw */
+/* OpenClaw Obsidian Plugin v3 — styles.css */
+/* Phase 1+2: Vault-aware context, Inline Edit, Slash Commands */
 
 /* ============================================
    Variables
@@ -591,6 +591,7 @@
   flex-shrink: 0;
   padding: 6px 10px 0 10px;
   gap: 6px;
+  flex-wrap: wrap;
 }
 
 .oc-context-row.has-content {
@@ -614,6 +615,14 @@
 
 .oc-context-chip-icon {
   font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.oc-context-chip-icon svg,
+.oc-context-chip-icon .svg-icon {
+  width: 12px;
+  height: 12px;
 }
 
 .oc-context-chip-remove {
@@ -632,7 +641,6 @@
   width: 100%;
   flex: 1 1 0;
   min-height: 60px;
-  /* max-height dynamically set by JS: max(150px, 55% of view height) */
   resize: none;
   padding: 10px;
   border: none !important;
@@ -715,7 +723,7 @@
 }
 
 /* ============================================
-   Settings (reuse existing patterns)
+   Settings
    ============================================ */
 .oc-test-container {
   display: flex;
@@ -811,7 +819,7 @@
 }
 
 /* ============================================
-   History Sidebar (for future use)
+   History Sidebar
    ============================================ */
 .oc-history-panel {
   display: none;
@@ -976,10 +984,6 @@
 /* ============================================
    Context Chips (attached files, images)
    ============================================ */
-.oc-context-row {
-  flex-wrap: wrap;
-}
-
 .oc-chip-remove {
   cursor: pointer;
   font-size: 14px;
@@ -994,6 +998,20 @@
 
 .oc-context-auto {
   opacity: 0.6;
+}
+
+/* ============================================
+   Selection Indicator (Phase 1)
+   ============================================ */
+.oc-selection-indicator {
+  background: rgba(var(--oc-brand-rgb), 0.15);
+  border: 1px solid rgba(var(--oc-brand-rgb), 0.3);
+  color: var(--text-normal);
+  opacity: 0.85;
+}
+
+.oc-selection-indicator .oc-context-chip-icon {
+  color: var(--oc-brand);
 }
 
 /* ============================================
@@ -1027,19 +1045,6 @@
   color: var(--text-normal);
   font-size: 14px;
 }
-
-/* ============================================
-   Responsive
-   ============================================ */
-@media (max-width: 400px) {
-  .oc-message {
-    max-width: 98%;
-  }
-  .oc-tab {
-    max-width: 80px;
-  }
-}
-
 
 /* ============================================
    Image Thumbnails in Context Row
@@ -1120,7 +1125,7 @@
 }
 
 /* ============================================
-   Images in Messages (Claudian-style, above user bubble)
+   Images in Messages
    ============================================ */
 .oc-message-images {
   display: flex;
@@ -1189,3 +1194,213 @@
   color: var(--text-normal);
 }
 
+/* ============================================
+   Refresh File Button (Phase 2)
+   ============================================ */
+.oc-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 4px 10px;
+  border-radius: var(--oc-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.oc-refresh-btn:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-color: var(--interactive-accent);
+}
+
+.oc-refresh-btn svg,
+.oc-refresh-btn .svg-icon {
+  width: 14px;
+  height: 14px;
+}
+
+/* ============================================
+   Inline Edit (Phase 2)
+   ============================================ */
+.oc-inline-edit-container {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 4px 0;
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--oc-radius);
+  background: var(--background-primary);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+  animation: oc-fadein 0.15s ease;
+}
+
+.oc-inline-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--oc-radius-sm);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.oc-inline-input:focus {
+  border-color: var(--interactive-accent);
+}
+
+.oc-inline-input::placeholder {
+  color: var(--text-faint);
+}
+
+.oc-inline-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--oc-brand);
+  border-radius: 50%;
+  animation: oc-spin 0.6s linear infinite;
+}
+
+/* ============================================
+   Inline Diff (Phase 2)
+   ============================================ */
+.oc-inline-diff-replace {
+  margin: 4px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--oc-radius);
+  background: var(--background-primary);
+  box-shadow: 0 2px 12px rgba(0,0,0,0.1);
+  animation: oc-fadein 0.15s ease;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.oc-diff-content {
+  margin-bottom: 8px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.oc-diff-del {
+  background: rgba(220, 38, 38, 0.15);
+  color: var(--text-error);
+  text-decoration: line-through;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.theme-light .oc-diff-del {
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.oc-diff-ins {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--text-success, #22c55e);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+.theme-light .oc-diff-ins {
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.oc-inline-diff-buttons {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.oc-inline-diff-buttons button {
+  padding: 4px 12px;
+  border-radius: var(--oc-radius-sm);
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.oc-diff-accept {
+  color: var(--text-success, #22c55e) !important;
+  border-color: var(--text-success, #22c55e) !important;
+}
+
+.oc-diff-accept:hover {
+  background: rgba(34, 197, 94, 0.15) !important;
+}
+
+.oc-diff-reject:hover {
+  color: var(--text-error) !important;
+  border-color: var(--text-error) !important;
+  background: rgba(220, 38, 38, 0.1) !important;
+}
+
+/* ============================================
+   Slash Command Popup (Phase 2)
+   ============================================ */
+.oc-slash-popup {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  max-height: 200px;
+  overflow-y: auto;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--oc-radius);
+  box-shadow: 0 -4px 16px rgba(0,0,0,0.15);
+  z-index: 100;
+  margin-bottom: 4px;
+}
+
+.oc-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.1s;
+}
+
+.oc-slash-item:hover,
+.oc-slash-item.selected {
+  background: var(--background-modifier-hover);
+}
+
+.oc-slash-cmd {
+  font-weight: 600;
+  color: var(--interactive-accent);
+  font-family: var(--font-monospace);
+  font-size: 13px;
+}
+
+.oc-slash-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ============================================
+   Responsive
+   ============================================ */
+@media (max-width: 400px) {
+  .oc-message {
+    max-width: 98%;
+  }
+  .oc-tab {
+    max-width: 80px;
+  }
+}

@@ -21,6 +21,10 @@ __export(main_exports, { default: () => ClawdianPlugin });
 module.exports = __toCommonJS(main_exports);
 var import_obsidian = require("obsidian");
 
+// CodeMirror 6 modules
+var cm_state = require("@codemirror/state");
+var cm_view = require("@codemirror/view");
+
 // ============================================
 // SecureStorage (preserved from v0.4.1)
 // ============================================
@@ -92,6 +96,88 @@ var SecureTokenStorage = class {
 };
 
 var secureTokenStorage = new SecureTokenStorage();
+
+// ============================================
+// Vault Helper Functions (Phase 1)
+// ============================================
+function getVaultBasePath(app) {
+  const adapter = app.vault.adapter;
+  if (adapter && adapter.basePath) return adapter.basePath;
+  return null;
+}
+
+function listSiblingFiles(app, file) {
+  if (!file || !file.parent) return [];
+  return file.parent.children.map(c => c.name).sort();
+}
+
+function buildSystemPrompt(app) {
+  const vaultPath = getVaultBasePath(app);
+  const activeFile = app.workspace.getActiveFile();
+  let prompt = `你正在 Obsidian vault 中协助用户编辑笔记。\n`;
+  if (vaultPath) prompt += `Vault 路径: ${vaultPath}\n`;
+  if (activeFile) {
+    const fullPath = vaultPath ? `${vaultPath}\\${activeFile.path.replace(/\//g, '\\')}` : activeFile.path;
+    prompt += `当前文件: ${activeFile.path}（完整路径: ${fullPath}）\n`;
+    const siblings = listSiblingFiles(app, activeFile);
+    if (siblings.length > 0) {
+      prompt += `当前目录内容:\n${siblings.map(s => `  - ${s}`).join('\n')}\n`;
+    }
+  }
+  prompt += `\n你可以使用 read/write/edit 工具直接操作 vault 中的文件。\n`;
+  if (vaultPath) {
+    prompt += `- 修改文件: 用 edit 工具，路径用完整路径如 "${vaultPath}\\文件名.md"\n`;
+  }
+  prompt += `- 创建文件: 用 write 工具\n- 读取文件: 用 read 工具\n文件修改后 Obsidian 会自动检测到变化。`;
+  return prompt;
+}
+
+// ============================================
+// Word-level Diff (Phase 2 - Inline Edit)
+// ============================================
+function computeWordDiff(oldText, newText) {
+  const oldWords = oldText.split(/(\s+)/);
+  const newWords = newText.split(/(\s+)/);
+  // Simple LCS-based diff
+  const m = oldWords.length, n = newWords.length;
+  // For performance, use a simplified approach
+  const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (oldWords[i - 1] === newWords[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  // Backtrack
+  const result = [];
+  let i = m, j = n;
+  const ops = [];
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && oldWords[i - 1] === newWords[j - 1]) {
+      ops.push({ type: 'same', text: oldWords[i - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.push({ type: 'ins', text: newWords[j - 1] });
+      j--;
+    } else {
+      ops.push({ type: 'del', text: oldWords[i - 1] });
+      i--;
+    }
+  }
+  ops.reverse();
+  return ops;
+}
+
+// ============================================
+// Slash Commands Definition
+// ============================================
+var SLASH_COMMANDS = [
+  { command: '/rewrite', label: '/rewrite', description: '重写当前文件' },
+  { command: '/translate', label: '/translate', description: '翻译选中文本' },
+  { command: '/summarize', label: '/summarize', description: '总结当前文件' },
+  { command: '/expand', label: '/expand', description: '扩展选中内容' },
+  { command: '/fix', label: '/fix', description: '修正语法错误' },
+];
 
 // ============================================
 // Settings & Defaults
@@ -212,13 +298,16 @@ var ClawdianAPI = class {
     });
   }
 
-  async chatSync(message) {
+  async chatSync(message, systemPrompt) {
     const url = `${this.settings.gatewayUrl}/v1/chat/completions`;
     const token = this.getToken();
+    const messages = [];
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+    messages.push({ role: "user", content: message });
     const response = await (0, import_obsidian.requestUrl)({
       url, method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "clawdbot:main", messages: [{ role: "user", content: message }], stream: false })
+      body: JSON.stringify({ model: "clawdbot:main", messages, stream: false })
     });
     if (response.status >= 400) throw new Error(`HTTP ${response.status}: ${response.text}`);
     return response.json?.choices?.[0]?.message?.content || "";
@@ -452,19 +541,17 @@ var ActionExecutor = class {
 // ============================================
 var LOBSTER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="50" cy="42" rx="14" ry="18"/><ellipse cx="50" cy="62" rx="11" ry="10"/><ellipse cx="50" cy="76" rx="8" ry="7"/><circle cx="44" cy="32" r="3" fill="currentColor"/><circle cx="56" cy="32" r="3" fill="currentColor"/><path d="M36 38c-8-2-16-1-20 4s-1 12 5 14"/><path d="M64 38c8-2 16-1 20 4s1 12-5 14"/><path d="M21 56c-5 1-10-1-12-5"/><path d="M79 56c5 1 10-1 12-5"/><path d="M24 48c-6-2-11 0-13 5"/><path d="M76 48c6-2 11 0 13 5"/><path d="M42 82l-7 10"/><path d="M58 82l7 10"/><path d="M47 83l-1 11"/><path d="M53 83l1 11"/><path d="M50 83v11"/><path d="M40 26c-3-6-8-14-8-14"/><path d="M60 26c3-6 8-14 8-14"/></svg>`;
 
-// Use Obsidian's setIcon API (Lucide icons) instead of raw innerHTML
-// This guarantees rendering in Obsidian's Electron environment
 function setIconSafe(el, iconName, size) {
   try {
     if (typeof import_obsidian.setIcon === "function") {
       import_obsidian.setIcon(el, iconName);
     } else {
-      // Fallback: create SVG manually for critical icons
       var fallbackMap = {
         "plus": "+", "trash-2": "\uD83D\uDDD1", "copy": "\uD83D\uDCCB",
         "check": "\u2713", "chevron-down": "\u25BC", "chevron-right": "\u25B6",
         "file-text": "\uD83D\uDCC4", "image": "\uD83D\uDDBC", "square": "\u25A0",
-        "refresh-cw": "\u21BB", "pencil": "\u270F", "brain": "\uD83E\uDDE0", "x": "\u2715"
+        "refresh-cw": "\u21BB", "pencil": "\u270F", "brain": "\uD83E\uDDE0", "x": "\u2715",
+        "type": "T", "wand-2": "\u2728", "zap": "\u26A1"
       };
       el.setText(fallbackMap[iconName] || iconName);
       return;
@@ -478,10 +565,6 @@ function setIconSafe(el, iconName, size) {
     el.setText(iconName);
   }
 }
-
-// Lucide icon names used:
-// plus, trash-2, chevron-down, chevron-right, copy, check, file-text,
-// image, square, refresh-cw, pencil, brain, x
 
 // ============================================
 // @ File Mention Popup
@@ -602,6 +685,111 @@ var FileMentionPopup = class {
 };
 
 // ============================================
+// Slash Command Popup
+// ============================================
+var SlashCommandPopup = class {
+  constructor(inputEl, onSelect) {
+    this.inputEl = inputEl;
+    this.onSelect = onSelect;
+    this.popupEl = null;
+    this.items = [];
+    this.selectedIndex = 0;
+    this.active = false;
+  }
+
+  show(query) {
+    this.active = true;
+    this.selectedIndex = 0;
+
+    if (!this.popupEl) {
+      this.popupEl = document.createElement("div");
+      this.popupEl.addClass("oc-slash-popup");
+      this.inputEl.parentElement.appendChild(this.popupEl);
+    }
+    this.popupEl.style.display = "block";
+    this.updateList(query);
+  }
+
+  hide() {
+    this.active = false;
+    if (this.popupEl) this.popupEl.style.display = "none";
+  }
+
+  updateList(query) {
+    if (!this.popupEl) return;
+    this.popupEl.empty();
+
+    const q = (query || "").toLowerCase().replace(/^\//, '');
+    this.items = SLASH_COMMANDS.filter(c =>
+      !q || c.command.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
+    );
+
+    if (this.items.length === 0) { this.hide(); return; }
+
+    this.items.forEach((cmd, i) => {
+      const item = this.popupEl.createDiv({
+        cls: "oc-slash-item" + (i === this.selectedIndex ? " selected" : "")
+      });
+      item.createSpan({ cls: "oc-slash-cmd", text: cmd.command });
+      item.createSpan({ cls: "oc-slash-desc", text: cmd.description });
+      item.addEventListener("click", () => this.select(cmd));
+      item.addEventListener("mouseenter", () => {
+        this.selectedIndex = i;
+        this.highlightSelected();
+      });
+    });
+  }
+
+  highlightSelected() {
+    if (!this.popupEl) return;
+    const children = this.popupEl.querySelectorAll(".oc-slash-item");
+    children.forEach((el, i) => el.toggleClass("selected", i === this.selectedIndex));
+  }
+
+  handleKey(e) {
+    if (!this.active) return false;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      this.selectedIndex = Math.min(this.selectedIndex + 1, this.items.length - 1);
+      this.highlightSelected();
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      this.selectedIndex = Math.max(this.selectedIndex - 1, 0);
+      this.highlightSelected();
+      return true;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      if (this.items.length > 0) {
+        e.preventDefault();
+        this.select(this.items[this.selectedIndex]);
+        return true;
+      }
+    }
+    if (e.key === "Escape") {
+      this.hide();
+      return true;
+    }
+    return false;
+  }
+
+  handleInput(value) {
+    if (value.startsWith('/') && !value.includes(' ') && !value.includes('\n')) {
+      this.show(value);
+    } else {
+      this.hide();
+    }
+  }
+
+  select(cmd) {
+    this.onSelect(cmd);
+    this.hide();
+  }
+};
+
+// ============================================
 // Rename Modal
 // ============================================
 var RenameModal = class extends import_obsidian.Modal {
@@ -632,7 +820,320 @@ var RenameModal = class extends import_obsidian.Modal {
 };
 
 // ============================================
-// Main Chat View (v2.0)
+// Inline Edit Manager (Phase 2)
+// ============================================
+var InlineEditManager = class {
+  constructor(plugin) {
+    this.plugin = plugin;
+    this.activeWidget = null;
+    this.activeDiff = null;
+  }
+
+  getActiveEditorView() {
+    const leaf = this.plugin.app.workspace.activeLeaf;
+    if (!leaf || !leaf.view || !leaf.view.editor) return null;
+    return leaf.view.editor.cm; // CM6 EditorView
+  }
+
+  getActiveEditor() {
+    const leaf = this.plugin.app.workspace.activeLeaf;
+    if (!leaf || !leaf.view || !leaf.view.editor) return null;
+    return leaf.view.editor;
+  }
+
+  async triggerInlineEdit(cursorMode) {
+    const editor = this.getActiveEditor();
+    if (!editor) { new import_obsidian.Notice("No active editor"); return; }
+
+    const editorView = editor.cm;
+    if (!editorView) { new import_obsidian.Notice("Cannot access editor view"); return; }
+
+    const selection = editor.getSelection();
+    const activeFile = this.plugin.app.workspace.getActiveFile();
+    if (!activeFile) { new import_obsidian.Notice("No active file"); return; }
+
+    const isInsertMode = cursorMode || !selection;
+    const selectedText = selection || "";
+    const cursor = editor.getCursor();
+
+    // Create inline input widget
+    this.showInlineInput(editorView, editor, selectedText, activeFile, isInsertMode, cursor);
+  }
+
+  showInlineInput(editorView, editor, selectedText, file, isInsertMode, cursor) {
+    // Remove previous widget if any
+    this.clearWidget();
+
+    // Determine position
+    const pos = isInsertMode
+      ? editor.posToOffset(cursor)
+      : editor.posToOffset(editor.getCursor("from"));
+
+    // Create the input container as a DOM element
+    const container = document.createElement("div");
+    container.addClass("oc-inline-edit-container");
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.addClass("oc-inline-input");
+    input.placeholder = isInsertMode ? "Describe what to insert..." : "Describe how to edit...";
+    container.appendChild(input);
+
+    const spinner = document.createElement("div");
+    spinner.addClass("oc-inline-spinner");
+    spinner.style.display = "none";
+    container.appendChild(spinner);
+
+    // Create CM6 widget
+    const self = this;
+    const widgetDeco = cm_view.Decoration.widget({
+      widget: new (class extends cm_view.WidgetType {
+        toDOM() { return container; }
+        ignoreEvent() { return false; }
+      })(),
+      side: 1,
+    });
+
+    const decoSet = cm_view.Decoration.set([widgetDeco.range(pos)]);
+    const stateField = cm_state.StateField.define({
+      create() { return decoSet; },
+      update(value, tr) { return value.map(tr.changes); },
+      provide(field) { return cm_view.EditorView.decorations.from(field); }
+    });
+
+    editorView.dispatch({
+      effects: cm_state.StateEffect.appendConfig.of(stateField)
+    });
+
+    this.activeWidget = { stateField, container, editorView };
+
+    // Focus input after a tick
+    setTimeout(() => input.focus(), 50);
+
+    // Handle input events
+    input.addEventListener("keydown", async (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const instruction = input.value.trim();
+        if (!instruction) return;
+        input.style.display = "none";
+        spinner.style.display = "block";
+
+        try {
+          const result = await self.callInlineAPI(selectedText, instruction, file, isInsertMode);
+          self.clearWidget();
+          if (result) {
+            self.showDiff(editorView, editor, selectedText, result, isInsertMode, cursor);
+          }
+        } catch (err) {
+          new import_obsidian.Notice(`Inline edit failed: ${err.message}`);
+          self.clearWidget();
+        }
+      } else if (e.key === "Escape") {
+        self.clearWidget();
+      }
+    });
+  }
+
+  async callInlineAPI(selectedText, instruction, file, isInsertMode) {
+    const vaultPath = getVaultBasePath(this.plugin.app);
+    let systemPrompt;
+    if (isInsertMode) {
+      systemPrompt = `你是内嵌在 Obsidian 中的编辑助手。用户在文件 "${file.path}" 中指定了光标位置，要求插入内容。
+直接输出要插入的文本，用 <insertion> 标签包裹：
+<insertion>要插入的文本</insertion>
+不要解释，不要寒暄，只输出插入结果。`;
+    } else {
+      systemPrompt = `你是内嵌在 Obsidian 中的编辑助手。用户选中了文本并给出编辑指令。
+直接输出修改后的文本，用 <replacement> 标签包裹：
+<replacement>修改后的文本</replacement>
+不要解释，不要寒暄，只输出替换结果。`;
+    }
+
+    let userMsg;
+    if (isInsertMode) {
+      userMsg = `文件: ${file.path}\n指令: ${instruction}`;
+    } else {
+      userMsg = `选中文本:\n${selectedText}\n\n指令: ${instruction}`;
+    }
+
+    const response = await this.plugin.api.chatSync(userMsg, systemPrompt);
+
+    // Parse response
+    if (isInsertMode) {
+      const match = response.match(/<insertion>([\s\S]*?)<\/insertion>/);
+      return match ? match[1] : response.trim();
+    } else {
+      const match = response.match(/<replacement>([\s\S]*?)<\/replacement>/);
+      return match ? match[1] : response.trim();
+    }
+  }
+
+  showDiff(editorView, editor, originalText, newText, isInsertMode, cursor) {
+    this.clearDiff();
+
+    if (isInsertMode) {
+      // For insert mode, just show the new text with accept/reject
+      const pos = editor.posToOffset(cursor);
+      const container = document.createElement("div");
+      container.addClass("oc-inline-diff-replace");
+
+      const insSpan = document.createElement("span");
+      insSpan.addClass("oc-diff-ins");
+      insSpan.textContent = newText;
+      container.appendChild(insSpan);
+
+      const buttonsDiv = document.createElement("div");
+      buttonsDiv.addClass("oc-inline-diff-buttons");
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.textContent = "✓ Accept";
+      acceptBtn.addClass("oc-diff-accept");
+      acceptBtn.addEventListener("click", () => {
+        // Insert text at cursor
+        editor.replaceRange(newText, cursor);
+        this.clearDiff();
+      });
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.textContent = "✗ Reject";
+      rejectBtn.addClass("oc-diff-reject");
+      rejectBtn.addEventListener("click", () => {
+        this.clearDiff();
+      });
+
+      buttonsDiv.appendChild(acceptBtn);
+      buttonsDiv.appendChild(rejectBtn);
+      container.appendChild(buttonsDiv);
+
+      const widgetDeco = cm_view.Decoration.widget({
+        widget: new (class extends cm_view.WidgetType {
+          toDOM() { return container; }
+          ignoreEvent() { return false; }
+        })(),
+        side: 1,
+      });
+
+      const decoSet = cm_view.Decoration.set([widgetDeco.range(pos)]);
+      const stateField = cm_state.StateField.define({
+        create() { return decoSet; },
+        update(value, tr) { return value.map(tr.changes); },
+        provide(field) { return cm_view.EditorView.decorations.from(field); }
+      });
+
+      editorView.dispatch({
+        effects: cm_state.StateEffect.appendConfig.of(stateField)
+      });
+
+      this.activeDiff = { stateField, container, editorView };
+    } else {
+      // For replace mode, show word-level diff
+      const fromPos = editor.posToOffset(editor.getCursor("from"));
+      const toPos = editor.posToOffset(editor.getCursor("to"));
+
+      const container = document.createElement("div");
+      container.addClass("oc-inline-diff-replace");
+
+      const diffOps = computeWordDiff(originalText, newText);
+      const diffContent = document.createElement("div");
+      diffContent.addClass("oc-diff-content");
+
+      for (const op of diffOps) {
+        if (op.type === 'same') {
+          diffContent.appendChild(document.createTextNode(op.text));
+        } else if (op.type === 'del') {
+          const span = document.createElement("span");
+          span.addClass("oc-diff-del");
+          span.textContent = op.text;
+          diffContent.appendChild(span);
+        } else if (op.type === 'ins') {
+          const span = document.createElement("span");
+          span.addClass("oc-diff-ins");
+          span.textContent = op.text;
+          diffContent.appendChild(span);
+        }
+      }
+      container.appendChild(diffContent);
+
+      const buttonsDiv = document.createElement("div");
+      buttonsDiv.addClass("oc-inline-diff-buttons");
+
+      const acceptBtn = document.createElement("button");
+      acceptBtn.textContent = "✓ Accept";
+      acceptBtn.addClass("oc-diff-accept");
+      acceptBtn.addEventListener("click", () => {
+        // Replace the selected text
+        const from = editor.offsetToPos(fromPos);
+        const to = editor.offsetToPos(toPos);
+        editor.replaceRange(newText, from, to);
+        this.clearDiff();
+      });
+
+      const rejectBtn = document.createElement("button");
+      rejectBtn.textContent = "✗ Reject";
+      rejectBtn.addClass("oc-diff-reject");
+      rejectBtn.addEventListener("click", () => {
+        this.clearDiff();
+      });
+
+      buttonsDiv.appendChild(acceptBtn);
+      buttonsDiv.appendChild(rejectBtn);
+      container.appendChild(buttonsDiv);
+
+      const widgetDeco = cm_view.Decoration.widget({
+        widget: new (class extends cm_view.WidgetType {
+          toDOM() { return container; }
+          ignoreEvent() { return false; }
+        })(),
+        side: 1,
+      });
+
+      const decoSet = cm_view.Decoration.set([widgetDeco.range(fromPos)]);
+      const stateField = cm_state.StateField.define({
+        create() { return decoSet; },
+        update(value, tr) { return value.map(tr.changes); },
+        provide(field) { return cm_view.EditorView.decorations.from(field); }
+      });
+
+      editorView.dispatch({
+        effects: cm_state.StateEffect.appendConfig.of(stateField)
+      });
+
+      this.activeDiff = { stateField, container, editorView };
+    }
+
+    // Keyboard handler for accept/reject
+    const onKey = (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const acceptBtn = this.activeDiff?.container?.querySelector('.oc-diff-accept');
+        if (acceptBtn) acceptBtn.click();
+        document.removeEventListener("keydown", onKey);
+      } else if (e.key === "Escape") {
+        this.clearDiff();
+        document.removeEventListener("keydown", onKey);
+      }
+    };
+    document.addEventListener("keydown", onKey);
+  }
+
+  clearWidget() {
+    if (this.activeWidget) {
+      try { this.activeWidget.container.remove(); } catch (e) {}
+      this.activeWidget = null;
+    }
+  }
+
+  clearDiff() {
+    if (this.activeDiff) {
+      try { this.activeDiff.container.remove(); } catch (e) {}
+      this.activeDiff = null;
+    }
+  }
+};
+
+// ============================================
+// Main Chat View (v3.0)
 // ============================================
 
 var TEXTAREA_MIN_MAX_HEIGHT = 150;
@@ -652,8 +1153,11 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.thinkingEl = null;
     this.thinkingContentEl = null;
     this.mentionPopup = null;
+    this.slashPopup = null;
     this.attachedFiles = []; // files attached via @
     this.pastedImages = []; // images pasted/dropped
+    this.selectionCheckInterval = null;
+    this.lastSelection = "";
   }
 
   getViewType() { return CLAWDIAN_VIEW_TYPE; }
@@ -709,18 +1213,20 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const inputContainer = container.createDiv({ cls: "oc-input-container" });
     const inputWrapper = inputContainer.createDiv({ cls: "oc-input-wrapper" });
 
-    // Context row (attached files + images)
+    // Context row (attached files + images + selection)
     this.contextRowEl = inputWrapper.createDiv({ cls: "oc-context-row" });
 
     // Textarea
     this.inputEl = inputWrapper.createEl("textarea", {
       cls: "oc-input",
-      attr: { placeholder: "Message Clawdian... (@ to mention files)", rows: "1" }
+      attr: { placeholder: "Message Clawdian... (@ to mention files, / for commands)", rows: "1" }
     });
 
     this.inputEl.addEventListener("input", () => {
       this.autoResizeInput();
       if (this.mentionPopup) this.mentionPopup.handleInput();
+      // Slash command detection
+      if (this.slashPopup) this.slashPopup.handleInput(this.inputEl.value);
     });
 
     // @ mention support
@@ -732,14 +1238,22 @@ var ClawdianView = class extends import_obsidian.ItemView {
       this.inputEl.value = before + `@${file.basename} ` + after;
       this.inputEl.selectionStart = this.inputEl.selectionEnd = before.length + file.basename.length + 2;
       this.inputEl.focus();
-      // Track attached file
       if (!this.attachedFiles.find(f => f.path === file.path)) {
         this.attachedFiles.push(file);
         this.updateContextRow();
       }
     });
 
+    // Slash command popup
+    this.slashPopup = new SlashCommandPopup(this.inputEl, (cmd) => {
+      this.inputEl.value = cmd.command + " ";
+      this.inputEl.focus();
+      this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
+    });
+
     this.inputEl.addEventListener("keydown", (e) => {
+      // Slash popup handling
+      if (this.slashPopup && this.slashPopup.handleKey(e)) return;
       // @ mention popup handling
       if (this.mentionPopup && this.mentionPopup.handleKey(e)) return;
 
@@ -870,7 +1384,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       if (this.abortController) this.abortController.abort();
     });
 
-    toolbarRight.createDiv({ cls: "oc-send-hint", text: "Enter \u2192 send \u00B7 @ \u2192 files" });
+    toolbarRight.createDiv({ cls: "oc-send-hint", text: "Enter \u2192 send \u00B7 @ files \u00B7 / cmds" });
 
     // ---- Initialize ----
     await this.plugin.conversationStore.loadAll();
@@ -892,13 +1406,47 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     this.updateContextRow();
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.updateContextRow()));
+
+    // Start selection auto-detection (Phase 1, item 4)
+    this.startSelectionDetection();
   }
 
   async onClose() {
+    this.stopSelectionDetection();
     if (this.openTabs) {
       this.plugin.settings._tabState = { tabs: this.openTabs, activeId: this.activeConvId };
       await this.plugin.saveSettings();
     }
+  }
+
+  // ---- Selection Auto-Detection (Phase 1) ----
+
+  startSelectionDetection() {
+    this.selectionCheckInterval = setInterval(() => {
+      const editor = this.getActiveEditor();
+      if (!editor) {
+        if (this.lastSelection) { this.lastSelection = ""; this.updateContextRow(); }
+        return;
+      }
+      const sel = editor.getSelection() || "";
+      if (sel !== this.lastSelection) {
+        this.lastSelection = sel;
+        this.updateContextRow();
+      }
+    }, 250);
+  }
+
+  stopSelectionDetection() {
+    if (this.selectionCheckInterval) {
+      clearInterval(this.selectionCheckInterval);
+      this.selectionCheckInterval = null;
+    }
+  }
+
+  getActiveEditor() {
+    const leaf = this.app.workspace.activeLeaf;
+    if (!leaf || !leaf.view || !leaf.view.editor) return null;
+    return leaf.view.editor;
   }
 
   // ---- Image Handling ----
@@ -919,7 +1467,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const img = overlay.createEl("img", { attr: { src } });
     overlay.addEventListener("click", () => overlay.remove());
     document.body.appendChild(overlay);
-    // ESC to close
     const onKey = (e) => { if (e.key === "Escape") { overlay.remove(); document.removeEventListener("keydown", onKey); } };
     document.addEventListener("keydown", onKey);
   }
@@ -1035,7 +1582,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
     if (!conv || conv.messages.length === 0) {
       const welcome = this.messagesEl.createDiv({ cls: "oc-welcome" });
       welcome.createDiv({ cls: "oc-welcome-greeting", text: "\uD83E\uDD9E Hey, Zorba" });
-      welcome.createDiv({ cls: "oc-welcome-hint", text: "Enter to send \u00B7 @ to attach files \u00B7 paste images" });
+      welcome.createDiv({ cls: "oc-welcome-hint", text: "Enter to send \u00B7 @ to attach files \u00B7 / for commands \u00B7 paste images" });
       return;
     }
     for (let i = 0; i < conv.messages.length; i++) {
@@ -1103,8 +1650,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
       lines.forEach((line, i) => { contentEl.appendText(line); if (i < lines.length - 1) contentEl.createEl("br"); });
     }
 
-
-
     // Message actions
     if (role === "assistant" || role === "user") {
       const actionsEl = msgEl.createDiv({ cls: "oc-message-actions" });
@@ -1124,7 +1669,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
         const editBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Edit & resend" } });
         setIconSafe(editBtn, "pencil");
         editBtn.addEventListener("click", () => {
-          // Truncate conversation from this message onward
           this.plugin.conversationStore.truncateFrom(this.activeConvId, msgIndex);
           this.inputEl.value = content;
           this.autoResizeInput();
@@ -1138,12 +1682,36 @@ var ClawdianView = class extends import_obsidian.ItemView {
         const regenBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Regenerate" } });
         setIconSafe(regenBtn, "refresh-cw");
         regenBtn.addEventListener("click", () => {
-          // Remove this assistant message and resend the previous user message
           this.plugin.conversationStore.truncateFrom(this.activeConvId, msgIndex);
           this.renderMessages();
           this.resendLastUserMessage();
         });
       }
+    }
+
+    // Refresh button for assistant messages (Phase 2, item 8)
+    if (role === "assistant") {
+      const refreshBtn = msgEl.createEl("button", { cls: "oc-refresh-btn" });
+      const refreshIcon = refreshBtn.createSpan();
+      setIconSafe(refreshIcon, "refresh-cw", "14");
+      refreshBtn.createSpan({ text: " Refresh current file" });
+      refreshBtn.addEventListener("click", () => {
+        const activeFile = this.app.workspace.getActiveFile();
+        if (activeFile) {
+          // Force Obsidian to re-read the file from disk
+          this.app.vault.adapter.read(activeFile.path).then(content => {
+            const file = this.app.vault.getAbstractFileByPath(activeFile.path);
+            if (file instanceof import_obsidian.TFile) {
+              this.app.vault.modify(file, content);
+              new import_obsidian.Notice(`Refreshed: ${activeFile.basename}`);
+            }
+          }).catch(() => {
+            new import_obsidian.Notice("Failed to refresh file");
+          });
+        } else {
+          new import_obsidian.Notice("No active file to refresh");
+        }
+      });
     }
 
     if (this.autoScrollEnabled) this.scrollToBottom();
@@ -1153,7 +1721,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
   // ---- Streaming Message ----
 
   startStreamingMessage() {
-    // Thinking indicator (shown first, before content arrives)
     this.streamingEl = this.messagesEl.createDiv({ cls: "oc-message oc-message-assistant" });
 
     this.thinkingEl = this.streamingEl.createDiv({ cls: "oc-thinking streaming" });
@@ -1163,7 +1730,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.thinkingHeaderEl.createSpan({ text: "Thinking..." });
     this.thinkingContentEl = this.thinkingEl.createDiv({ cls: "oc-thinking-body" });
     this.thinkingContentEl.style.display = "block";
-    this.thinkingEl.style.display = "none"; // Hidden until thinking content arrives
+    this.thinkingEl.style.display = "none";
 
     this.streamingContentEl = this.streamingEl.createDiv({ cls: "oc-message-content" });
 
@@ -1231,13 +1798,34 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const regenBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Regenerate" } });
     setIconSafe(regenBtn, "refresh-cw");
     regenBtn.addEventListener("click", () => {
-      // Find msg index
       const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
       if (conv) {
         const idx = conv.messages.length - 1;
         this.plugin.conversationStore.truncateFrom(this.activeConvId, idx);
         this.renderMessages();
         this.resendLastUserMessage();
+      }
+    });
+
+    // Refresh file button
+    const refreshBtn = this.streamingEl.createEl("button", { cls: "oc-refresh-btn" });
+    const refreshIcon = refreshBtn.createSpan();
+    setIconSafe(refreshIcon, "refresh-cw", "14");
+    refreshBtn.createSpan({ text: " Refresh current file" });
+    refreshBtn.addEventListener("click", () => {
+      const activeFile = this.app.workspace.getActiveFile();
+      if (activeFile) {
+        this.app.vault.adapter.read(activeFile.path).then(content => {
+          const file = this.app.vault.getAbstractFileByPath(activeFile.path);
+          if (file instanceof import_obsidian.TFile) {
+            this.app.vault.modify(file, content);
+            new import_obsidian.Notice(`Refreshed: ${activeFile.basename}`);
+          }
+        }).catch(() => {
+          new import_obsidian.Notice("Failed to refresh file");
+        });
+      } else {
+        new import_obsidian.Notice("No active file to refresh");
       }
     });
 
@@ -1279,28 +1867,37 @@ var ClawdianView = class extends import_obsidian.ItemView {
     let userContent = content;
     const contextParts = [];
 
-    // @ mentioned files
+    // @ mentioned files (Phase 1: 16000 char limit)
     if (this.attachedFiles.length > 0) {
       for (const file of this.attachedFiles) {
         try {
           const fileContent = await this.app.vault.read(file);
-          contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent.slice(0, 8000)}\n\`\`\``);
+          const truncated = fileContent.length > 16000;
+          contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent.slice(0, 16000)}${truncated ? '\n... (truncated)' : ''}\n\`\`\``);
         } catch (e) {}
       }
       this.attachedFiles = [];
     }
 
-    // Current note
+    // Current note (Phase 1: 16000 char limit)
     if (this.plugin.settings.includeCurrentNote) {
       const activeFile = this.app.workspace.getActiveFile();
       if (activeFile instanceof import_obsidian.TFile && activeFile.extension === "md") {
         if (!activeFile.path.startsWith(this.plugin.settings.conversationsPath || "Clawdian/conversations")) {
           try {
             const noteContent = await this.app.vault.read(activeFile);
-            if (noteContent.trim()) contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent.slice(0, 4000)}\n\`\`\``);
+            if (noteContent.trim()) {
+              const truncated = noteContent.length > 16000;
+              contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent.slice(0, 16000)}${truncated ? '\n... (truncated, total ' + noteContent.length + ' chars)' : ''}\n\`\`\``);
+            }
           } catch (e) {}
         }
       }
+    }
+
+    // Selection context (Phase 1, item 4)
+    if (this.lastSelection && this.lastSelection.trim()) {
+      contextParts.push(`[Selected text in editor]\n\`\`\`\n${this.lastSelection.slice(0, 4000)}\n\`\`\``);
     }
 
     if (contextParts.length > 0) userContent += "\n\n" + contextParts.join("\n\n");
@@ -1336,12 +1933,18 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     try {
       const history = this.plugin.conversationStore.getMessages(convId);
-      const apiMessages = history.map((m, i) => {
-        if (i === history.length - 1 && m.role === "user") {
-          return { role: "user", content: apiContent };
-        }
-        return m;
-      });
+
+      // Build API messages with system prompt (Phase 1, item 1)
+      const systemPrompt = buildSystemPrompt(this.app);
+      const apiMessages = [
+        { role: "system", content: systemPrompt },
+        ...history.map((m, i) => {
+          if (i === history.length - 1 && m.role === "user") {
+            return { role: "user", content: apiContent };
+          }
+          return m;
+        })
+      ];
 
       const result = await this.plugin.api.chat(
         apiMessages,
@@ -1362,6 +1965,13 @@ var ClawdianView = class extends import_obsidian.ItemView {
       if (actions.length > 0) await this.plugin.actionExecutor.execute(actions);
       await this.plugin.conversationStore.saveConversation(convId);
 
+      // AI title generation (Phase 2, item 7)
+      const conv = this.plugin.conversationStore.getConversation(convId);
+      if (conv && conv.messages.length === 2 && conv.title.startsWith(content.slice(0, 10))) {
+        // First exchange — generate a short title
+        this.generateTitle(convId, content);
+      }
+
     } catch (err) {
       if (err.name === "AbortError") {
         this.finalizeStreamingMessage("*(cancelled)*", "");
@@ -1379,10 +1989,27 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.inputEl.focus();
   }
 
+  // ---- AI Title Generation (Phase 2) ----
+  async generateTitle(convId, firstMessage) {
+    try {
+      const title = await this.plugin.api.chatSync(
+        `用5个字以内为这段对话起标题：${firstMessage.slice(0, 200)}`,
+        "你是标题生成器。只输出标题文字，不加引号、标点或解释。"
+      );
+      const cleanTitle = title.replace(/["""'']/g, '').trim().slice(0, 20);
+      if (cleanTitle && cleanTitle.length > 0) {
+        this.plugin.conversationStore.updateTitle(convId, cleanTitle);
+        await this.plugin.conversationStore.saveConversation(convId);
+        this.renderTabs();
+      }
+    } catch (e) {
+      console.log("Clawdian: Title generation failed (non-critical)", e);
+    }
+  }
+
   // ---- Helpers ----
 
   autoResizeInput() {
-    // Claudian-style: use minHeight to expand, maxHeight to cap
     this.inputEl.style.minHeight = "";
     const container = this.inputEl.closest(".openclaw-container");
     const viewHeight = container ? container.clientHeight : window.innerHeight;
@@ -1423,7 +2050,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
         cls: "oc-image-thumb",
         attr: { src: this.pastedImages[i].data, alt: this.pastedImages[i].name }
       });
-      // Click to enlarge
       thumb.addEventListener("click", () => this.showLightbox(this.pastedImages[i].data));
       const removeBtn = chip.createDiv({ cls: "oc-image-chip-remove" });
       removeBtn.setText("\u00D7");
@@ -1445,6 +2071,16 @@ var ClawdianView = class extends import_obsidian.ItemView {
           chip.createSpan({ text: `\uD83D\uDCC4 ${activeFile.basename}` });
         }
       }
+    }
+
+    // Show selection indicator (Phase 1, item 4)
+    if (this.lastSelection && this.lastSelection.trim()) {
+      hasContent = true;
+      const chip = this.contextRowEl.createDiv({ cls: "oc-context-chip oc-selection-indicator" });
+      const preview = this.lastSelection.trim().slice(0, 30) + (this.lastSelection.length > 30 ? "..." : "");
+      const selIcon = chip.createSpan({ cls: "oc-context-chip-icon" });
+      setIconSafe(selIcon, "type", "12");
+      chip.createSpan({ text: ` ${preview}` });
     }
 
     this.contextRowEl.toggleClass("has-content", hasContent);
@@ -1535,6 +2171,7 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
     this.api = new ClawdianAPI(this.settings);
     this.actionExecutor = new ActionExecutor(this.app, () => this.settings);
     this.conversationStore = new ConversationStore(this.app, () => this.settings);
+    this.inlineEditManager = new InlineEditManager(this);
 
     (0, import_obsidian.addIcon)("clawdian-lobster", LOBSTER_ICON);
 
@@ -1613,6 +2250,27 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
       }
     });
 
+    // Inline Edit command (Phase 2)
+    this.addCommand({
+      id: "inline-edit", name: "Inline Edit (selection)",
+      editorCallback: async (editor) => {
+        const selection = editor.getSelection();
+        if (!selection) {
+          new import_obsidian.Notice("Select text first, or use 'Inline Edit at cursor'");
+          return;
+        }
+        this.inlineEditManager.triggerInlineEdit(false);
+      }
+    });
+
+    // Inline Edit at cursor (Phase 2)
+    this.addCommand({
+      id: "inline-edit-cursor", name: "Inline Edit at cursor (insert)",
+      editorCallback: async (editor) => {
+        this.inlineEditManager.triggerInlineEdit(true);
+      }
+    });
+
     // ---- Editor context menu ----
     this.registerEvent(
       this.app.workspace.on("editor-menu", (menu, editor) => {
@@ -1650,15 +2308,29 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
                 }
               });
           });
+          // Inline edit in context menu
+          menu.addItem(item => {
+            item.setTitle("Inline Edit with Clawdian")
+              .setIcon("wand-2")
+              .onClick(() => {
+                this.inlineEditManager.triggerInlineEdit(false);
+              });
+          });
         }
       })
     );
 
     this.addSettingTab(new ClawdianSettingTab(this.app, this));
-    console.log("Clawdian v2.0 loaded \uD83E\uDD9E");
+    console.log("Clawdian v3.0 loaded \uD83E\uDD9E");
   }
 
-  onunload() { console.log("Clawdian unloaded"); }
+  onunload() {
+    if (this.inlineEditManager) {
+      this.inlineEditManager.clearWidget();
+      this.inlineEditManager.clearDiff();
+    }
+    console.log("Clawdian unloaded");
+  }
 
   async loadSettings() {
     const data = await this.loadData() || {};
@@ -1677,7 +2349,6 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
   async activateView() {
     const { workspace } = this.app;
     let leaf = null;
-    // Check both new and old view types
     let leaves = workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
     if (leaves.length === 0) leaves = workspace.getLeavesOfType("openclaw-chat-view");
     if (leaves.length > 0) {

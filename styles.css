@@ -193,7 +193,7 @@
 .oc-messages {
   flex: 1;
   overflow-y: auto;
-  padding: var(--oc-gap) 4px;
+  padding: 12px 0;
   display: flex;
   flex-direction: column;
   gap: var(--oc-gap);
@@ -291,34 +291,19 @@
 }
 
 .oc-message-user {
-  background: transparent;
-  align-self: stretch;
-  width: 100%;
-  max-width: 100%;
-  padding-left: var(--oc-pad);
-  padding-right: var(--oc-pad);
-}
-
-.oc-message-user .oc-message-content {
-  background: var(--background-secondary);
-  padding: 8px 12px;
-  border-radius: var(--oc-radius);
+  background: rgba(0, 0, 0, 0.3);
+  align-self: flex-end;
   border-bottom-right-radius: var(--oc-radius-sm);
-  display: inline-block;
-  max-width: 100%;
-  float: right;
-  clear: both;
+  max-width: 95%;
 }
 
-.oc-message-user .oc-message-content::after {
-  content: "";
-  display: table;
-  clear: both;
+.theme-light .oc-message-user {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .oc-message-user::selection,
 .oc-message-user ::selection {
-  background: var(--text-selection);
+  background: rgba(255, 255, 255, 0.3);
   color: inherit;
 }
 
@@ -501,7 +486,6 @@
 
 .oc-message-user .oc-message-actions {
   justify-content: flex-end;
-  clear: both;
 }
 
 .oc-action-btn {
@@ -647,8 +631,8 @@
 .oc-input {
   width: 100%;
   flex: 1 1 0;
-  min-height: 40px;
-  max-height: 40vh;
+  min-height: 60px;
+  /* max-height dynamically set by JS: max(150px, 55% of view height) */
   resize: none;
   padding: 10px;
   border: none !important;
@@ -1136,28 +1120,38 @@
 }
 
 /* ============================================
-   Inline Images in Messages
+   Images in Messages (Claudian-style, above user bubble)
    ============================================ */
-.oc-msg-images {
+.oc-message-images {
   display: flex;
-  gap: 6px;
   flex-wrap: wrap;
-  margin-top: 8px;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+  padding-right: 4px;
 }
 
-.oc-msg-image-thumb {
+.oc-message-image {
   width: 120px;
-  height: 90px;
-  object-fit: cover;
-  border-radius: var(--oc-radius-sm);
-  border: 1px solid var(--background-modifier-border);
+  height: 120px;
+  border-radius: var(--oc-radius);
+  overflow: hidden;
   cursor: pointer;
-  transition: border-color 0.15s, transform 0.15s;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
 }
 
-.oc-msg-image-thumb:hover {
-  border-color: var(--interactive-accent);
-  transform: scale(1.02);
+.oc-message-image:hover {
+  transform: scale(1.03);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.oc-message-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 /* ============================================
@@ -1195,9 +1189,3 @@
   color: var(--text-normal);
 }
 
-
-/* Fix user message float clearing */
-.oc-message-user .oc-msg-images {
-  clear: both;
-  float: right;
-}

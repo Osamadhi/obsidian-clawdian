@@ -643,6 +643,9 @@ var RenameModal = class extends import_obsidian.Modal {
 // ============================================
 // Main Chat View (v2.0)
 // ============================================
+
+var TEXTAREA_MIN_MAX_HEIGHT = 150;
+var TEXTAREA_MAX_HEIGHT_PERCENT = 0.55;
 var CLAWDIAN_VIEW_TYPE = "clawdian-chat-view";
 
 var ClawdianView = class extends import_obsidian.ItemView {
@@ -1055,6 +1058,19 @@ var ClawdianView = class extends import_obsidian.ItemView {
       msgEl.createDiv({ cls: "oc-role-label", text: "\uD83E\uDD9E Clawdian" });
     } else if (role === "user") {
       msgEl.createDiv({ cls: "oc-role-label oc-role-user", text: "You" });
+      // Render images ABOVE user message bubble (Claudian-style)
+      const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
+      if (conv && typeof msgIndex === "number") {
+        const msg = conv.messages[msgIndex];
+        if (msg && msg.images && msg.images.length > 0) {
+          const imagesEl = msgEl.createDiv({ cls: "oc-message-images" });
+          for (const imgData of msg.images) {
+            const imgWrap = imagesEl.createDiv({ cls: "oc-message-image" });
+            imgWrap.createEl("img", { attr: { src: imgData } });
+            imgWrap.addEventListener("click", () => this.showLightbox(imgData));
+          }
+        }
+      }
     }
 
     // Thinking block (collapsible)
@@ -1088,21 +1104,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       lines.forEach((line, i) => { contentEl.appendText(line); if (i < lines.length - 1) contentEl.createEl("br"); });
     }
 
-    // Render inline images for user messages (from conversation store)
-    const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
-    if (conv && typeof msgIndex === "number") {
-      const msg = conv.messages[msgIndex];
-      if (msg && msg.images && msg.images.length > 0) {
-        const imgRow = contentEl.createDiv({ cls: "oc-msg-images" });
-        for (const imgData of msg.images) {
-          const thumb = imgRow.createEl("img", {
-            cls: "oc-msg-image-thumb",
-            attr: { src: imgData }
-          });
-          thumb.addEventListener("click", () => this.showLightbox(imgData));
-        }
-      }
-    }
+
 
     // Message actions
     if (role === "assistant" || role === "user") {
@@ -1381,11 +1383,17 @@ var ClawdianView = class extends import_obsidian.ItemView {
   // ---- Helpers ----
 
   autoResizeInput() {
-    this.inputEl.style.height = "auto";
-    const viewH = this.messagesEl?.parentElement?.clientHeight || this.containerEl.clientHeight || 600;
-    const maxH = Math.max(Math.min(viewH * 0.4, 400), 120);
-    const newH = Math.min(this.inputEl.scrollHeight, maxH);
-    this.inputEl.style.height = Math.max(newH, 40) + "px";
+    // Claudian-style: use minHeight to expand, maxHeight to cap
+    this.inputEl.style.minHeight = "";
+    const container = this.inputEl.closest(".openclaw-container");
+    const viewHeight = container ? container.clientHeight : window.innerHeight;
+    const maxHeight = Math.max(TEXTAREA_MIN_MAX_HEIGHT, viewHeight * TEXTAREA_MAX_HEIGHT_PERCENT);
+    const flexAllocatedHeight = this.inputEl.offsetHeight;
+    const contentHeight = Math.min(this.inputEl.scrollHeight, maxHeight);
+    if (contentHeight > flexAllocatedHeight) {
+      this.inputEl.style.minHeight = `${contentHeight}px`;
+    }
+    this.inputEl.style.maxHeight = `${maxHeight}px`;
   }
 
   scrollToBottom() {

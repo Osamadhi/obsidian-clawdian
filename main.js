@@ -454,13 +454,26 @@ var LOBSTER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100
 // This guarantees rendering in Obsidian's Electron environment
 function setIconSafe(el, iconName, size) {
   try {
-    (0, import_obsidian.setIcon)(el, iconName);
+    if (typeof import_obsidian.setIcon === "function") {
+      import_obsidian.setIcon(el, iconName);
+    } else {
+      // Fallback: create SVG manually for critical icons
+      var fallbackMap = {
+        "plus": "+", "trash-2": "\uD83D\uDDD1", "copy": "\uD83D\uDCCB",
+        "check": "\u2713", "chevron-down": "\u25BC", "chevron-right": "\u25B6",
+        "file-text": "\uD83D\uDCC4", "image": "\uD83D\uDDBC", "square": "\u25A0",
+        "refresh-cw": "\u21BB", "pencil": "\u270F", "brain": "\uD83E\uDDE0", "x": "\u2715"
+      };
+      el.setText(fallbackMap[iconName] || iconName);
+      return;
+    }
     if (size) {
-      const svg = el.querySelector("svg");
+      var svg = el.querySelector("svg") || el.querySelector(".svg-icon");
       if (svg) { svg.setAttribute("width", size); svg.setAttribute("height", size); }
     }
   } catch (e) {
-    el.setText(iconName); // fallback
+    console.error("Clawdian setIconSafe failed:", iconName, e);
+    el.setText(iconName);
   }
 }
 
@@ -643,6 +656,17 @@ var ClawdianView = class extends import_obsidian.ItemView {
   getIcon() { return "clawdian-lobster"; }
 
   async onOpen() {
+    try { await this._onOpen(); }
+    catch (e) {
+      console.error("Clawdian onOpen failed:", e);
+      const container = this.containerEl.children[1];
+      container.empty();
+      container.createEl("p", { text: "\u274C Clawdian failed to load: " + (e.message || e) });
+      container.createEl("p", { text: "Check developer console (Ctrl+Shift+I) for details." });
+    }
+  }
+
+  async _onOpen() {
     const container = this.containerEl.children[1];
     container.empty();
     container.addClass("openclaw-container");
@@ -1571,7 +1595,9 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
   async activateView() {
     const { workspace } = this.app;
     let leaf = null;
-    const leaves = workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
+    // Check both new and old view types
+    let leaves = workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
+    if (leaves.length === 0) leaves = workspace.getLeavesOfType("openclaw-chat-view");
     if (leaves.length > 0) {
       leaf = leaves[0];
     } else {

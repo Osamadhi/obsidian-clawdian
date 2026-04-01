@@ -128,7 +128,11 @@ function buildSystemPrompt(app) {
   if (vaultPath) {
     prompt += `- 修改文件: 用 edit 工具，路径用完整路径如 "${vaultPath}\\文件名.md"\n`;
   }
-  prompt += `- 创建文件: 用 write 工具\n- 读取文件: 用 read 工具\n文件修改后 Obsidian 会自动检测到变化。`;
+  prompt += `- 创建文件: 用 write 工具\n- 读取文件: 用 read 工具\n文件修改后 Obsidian 会自动检测到变化。\n`;
+  prompt += `\n## 大文件处理\n`;
+  prompt += `大文件（>30K字符）会自动根据用户问题搜索相关段落，搜索结果已包含在附件上下文中。\n`;
+  prompt += `如果搜索结果不够，可用 exec 执行 vault_search.py 手动补充搜索，或用 read 工具读取指定行范围。\n`;
+  prompt += `手动搜索命令: python E:\\\\openclaw-work\\\\clawdian\\\\vault_search.py --query "关键词" --path "文件路径"\n`;
   return prompt;
 }
 
@@ -216,7 +220,7 @@ var ClawdianAPI = class {
     const parsedUrl = new URL(`${this.settings.gatewayUrl}/v1/chat/completions`);
     const token = this.getToken();
     const body = JSON.stringify({
-      model: "clawdbot:main",
+      model: "openclaw",
       messages: messages,
       stream: true
     });
@@ -234,7 +238,8 @@ var ClawdianAPI = class {
         headers: {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json",
-          "Accept": "text/event-stream"
+          "Accept": "text/event-stream",
+          "x-openclaw-scopes": "operator.admin,operator.read,operator.write"
         }
       }, (res) => {
         if (res.statusCode >= 400) {
@@ -306,8 +311,8 @@ var ClawdianAPI = class {
     messages.push({ role: "user", content: message });
     const response = await (0, import_obsidian.requestUrl)({
       url, method: "POST",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "clawdbot:main", messages, stream: false })
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "x-openclaw-scopes": "operator.admin,operator.read,operator.write" },
+      body: JSON.stringify({ model: "openclaw", messages, stream: false })
     });
     if (response.status >= 400) throw new Error(`HTTP ${response.status}: ${response.text}`);
     return response.json?.choices?.[0]?.message?.content || "";
@@ -394,6 +399,8 @@ var ConversationStore = class {
     } else {
       await this.app.vault.create(filePath, data);
     }
+    // Dual-write: export readable Markdown copy
+    try { await this.exportMarkdown(id); } catch (e) { console.error("Clawdian: MD export error", e); }
   }
 
   async loadAll() {
@@ -410,6 +417,64 @@ var ConversationStore = class {
         } catch (e) { console.error("Clawdian: Failed to load conversation", child.path, e); }
       }
     }
+  }
+
+  async exportMarkdown(id) {
+    const conv = this.conversations.get(id);
+    if (!conv || !conv.messages.length) return;
+    const settings = this.getSettings();
+    const mdFolder = settings.conversationsPath + "/md";
+    await this.ensureFolder(mdFolder);
+
+    const created = new Date(conv.createdAt);
+    const updated = new Date(conv.updatedAt);
+    const pad = (n) => String(n).padStart(2, "0");
+    const fmtDate = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    // Build safe filename from title
+    const safeTitle = (conv.title || "Untitled").replace(/[\\/:*?"<>|]/g, "_").slice(0, 60);
+    const datePrefix = `${created.getFullYear()}${pad(created.getMonth()+1)}${pad(created.getDate())}`;
+    const fileName = `${datePrefix}-${safeTitle}.md`;
+
+    let md = `---\ntitle: "${conv.title.replace(/"/g, '\\"')}"\ncreated: ${fmtDate(created)}\nupdated: ${fmtDate(updated)}\nid: ${conv.id}\n---\n\n`;
+
+    for (const msg of conv.messages) {
+      const time = new Date(msg.timestamp);
+      const timeStr = `${pad(time.getHours())}:${pad(time.getMinutes())}`;
+      if (msg.role === "user") {
+        md += `## 👤 User (${timeStr})\n\n${msg.content}\n\n`;
+      } else if (msg.role === "assistant") {
+        if (msg.thinking) {
+          md += `## 🤖 Assistant (${timeStr})\n\n<details><summary>💭 Thinking</summary>\n\n${msg.thinking}\n\n</details>\n\n${msg.content}\n\n`;
+        } else {
+          md += `## 🤖 Assistant (${timeStr})\n\n${msg.content}\n\n`;
+        }
+      }
+    }
+
+    const mdPath = `${mdFolder}/${fileName}`;
+    const existing = this.app.vault.getAbstractFileByPath(mdPath);
+    try {
+      if (existing instanceof import_obsidian.TFile) {
+        await this.app.vault.modify(existing, md);
+      } else {
+        // Remove old exports for same conv id (title may have changed)
+        const folder = this.app.vault.getAbstractFileByPath(mdFolder);
+        if (folder instanceof import_obsidian.TFolder) {
+          for (const child of folder.children) {
+            if (child instanceof import_obsidian.TFile && child.extension === "md") {
+              try {
+                const raw = await this.app.vault.read(child);
+                if (raw.includes("id: " + conv.id)) {
+                  await this.app.vault.delete(child);
+                }
+              } catch (e) {}
+            }
+          }
+        }
+        await this.app.vault.create(mdPath, md);
+      }
+    } catch (e) { console.error("Clawdian: MD export failed", e); }
   }
 
   async deleteFile(id) {
@@ -551,14 +616,21 @@ function setIconSafe(el, iconName, size) {
         "check": "\u2713", "chevron-down": "\u25BC", "chevron-right": "\u25B6",
         "file-text": "\uD83D\uDCC4", "image": "\uD83D\uDDBC", "square": "\u25A0",
         "refresh-cw": "\u21BB", "pencil": "\u270F", "brain": "\uD83E\uDDE0", "x": "\u2715",
-        "type": "T", "wand-2": "\u2728", "zap": "\u26A1"
+        "type": "T", "wand-2": "\u2728", "zap": "\u26A1",
+        "chevron-up": "\u25B2"
       };
       el.setText(fallbackMap[iconName] || iconName);
       return;
     }
-    if (size) {
-      var svg = el.querySelector("svg") || el.querySelector(".svg-icon");
-      if (svg) { svg.setAttribute("width", size); svg.setAttribute("height", size); }
+    // Always force SVG size via inline style (Obsidian's default is too small for action buttons)
+    var svg = el.querySelector("svg") || el.querySelector(".svg-icon");
+    if (svg) {
+      var s = size || "18";
+      svg.style.width = s + "px";
+      svg.style.height = s + "px";
+      svg.style.minWidth = s + "px";
+      svg.style.minHeight = s + "px";
+      svg.style.strokeWidth = "2px";
     }
   } catch (e) {
     console.error("Clawdian setIconSafe failed:", iconName, e);
@@ -822,11 +894,30 @@ var RenameModal = class extends import_obsidian.Modal {
 // ============================================
 // Inline Edit Manager (Phase 2)
 // ============================================
+
+// Single shared StateEffect + StateField to avoid appendConfig accumulation
+var inlineEditEffect = cm_state.StateEffect.define();
+var inlineEditField = cm_state.StateField.define({
+  create() { return cm_view.Decoration.none; },
+  update(value, tr) {
+    value = value.map(tr.changes);
+    for (let e of tr.effects) {
+      if (e.is(inlineEditEffect)) {
+        value = e.value;
+      }
+    }
+    return value;
+  },
+  provide(field) { return cm_view.EditorView.decorations.from(field); }
+});
+
 var InlineEditManager = class {
   constructor(plugin) {
     this.plugin = plugin;
     this.activeWidget = null;
     this.activeDiff = null;
+    // Register the shared StateField once for all editor views
+    this.plugin.registerEditorExtension([inlineEditField]);
   }
 
   getActiveEditorView() {
@@ -895,17 +986,12 @@ var InlineEditManager = class {
     });
 
     const decoSet = cm_view.Decoration.set([widgetDeco.range(pos)]);
-    const stateField = cm_state.StateField.define({
-      create() { return decoSet; },
-      update(value, tr) { return value.map(tr.changes); },
-      provide(field) { return cm_view.EditorView.decorations.from(field); }
-    });
 
     editorView.dispatch({
-      effects: cm_state.StateEffect.appendConfig.of(stateField)
+      effects: inlineEditEffect.of(decoSet)
     });
 
-    this.activeWidget = { stateField, container, editorView };
+    this.activeWidget = { container, editorView };
 
     // Focus input after a tick
     setTimeout(() => input.focus(), 50);
@@ -1015,17 +1101,12 @@ var InlineEditManager = class {
       });
 
       const decoSet = cm_view.Decoration.set([widgetDeco.range(pos)]);
-      const stateField = cm_state.StateField.define({
-        create() { return decoSet; },
-        update(value, tr) { return value.map(tr.changes); },
-        provide(field) { return cm_view.EditorView.decorations.from(field); }
-      });
 
       editorView.dispatch({
-        effects: cm_state.StateEffect.appendConfig.of(stateField)
+        effects: inlineEditEffect.of(decoSet)
       });
 
-      this.activeDiff = { stateField, container, editorView };
+      this.activeDiff = { container, editorView };
     } else {
       // For replace mode, show word-level diff
       const fromPos = editor.posToOffset(editor.getCursor("from"));
@@ -1089,17 +1170,12 @@ var InlineEditManager = class {
       });
 
       const decoSet = cm_view.Decoration.set([widgetDeco.range(fromPos)]);
-      const stateField = cm_state.StateField.define({
-        create() { return decoSet; },
-        update(value, tr) { return value.map(tr.changes); },
-        provide(field) { return cm_view.EditorView.decorations.from(field); }
-      });
 
       editorView.dispatch({
-        effects: cm_state.StateEffect.appendConfig.of(stateField)
+        effects: inlineEditEffect.of(decoSet)
       });
 
-      this.activeDiff = { stateField, container, editorView };
+      this.activeDiff = { container, editorView };
     }
 
     // Keyboard handler for accept/reject
@@ -1120,6 +1196,11 @@ var InlineEditManager = class {
   clearWidget() {
     if (this.activeWidget) {
       try { this.activeWidget.container.remove(); } catch (e) {}
+      try {
+        this.activeWidget.editorView.dispatch({
+          effects: inlineEditEffect.of(cm_view.Decoration.none)
+        });
+      } catch (e) {}
       this.activeWidget = null;
     }
   }
@@ -1127,6 +1208,11 @@ var InlineEditManager = class {
   clearDiff() {
     if (this.activeDiff) {
       try { this.activeDiff.container.remove(); } catch (e) {}
+      try {
+        this.activeDiff.editorView.dispatch({
+          effects: inlineEditEffect.of(cm_view.Decoration.none)
+        });
+      } catch (e) {}
       this.activeDiff = null;
     }
   }
@@ -1197,6 +1283,13 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const messagesWrapper = container.createDiv({ cls: "oc-messages-wrapper" });
     this.messagesEl = messagesWrapper.createDiv({ cls: "oc-messages" });
 
+    // Scroll to top button
+    this.scrollTopBtnEl = messagesWrapper.createDiv({ cls: "oc-scroll-btn oc-scroll-top" });
+    setIconSafe(this.scrollTopBtnEl, "chevron-up");
+    this.scrollTopBtnEl.addEventListener("click", () => {
+      this.messagesEl.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
     // Scroll to bottom button
     this.scrollBtnEl = messagesWrapper.createDiv({ cls: "oc-scroll-btn" });
     setIconSafe(this.scrollBtnEl, "chevron-down");
@@ -1205,8 +1298,10 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.messagesEl.addEventListener("scroll", () => {
       const { scrollTop, scrollHeight, clientHeight } = this.messagesEl;
       const atBottom = scrollHeight - scrollTop - clientHeight < 30;
+      const atTop = scrollTop < 30;
       this.autoScrollEnabled = atBottom;
       this.scrollBtnEl.toggleClass("visible", !atBottom);
+      this.scrollTopBtnEl.toggleClass("visible", !atTop);
     });
 
     // ---- Input ----
@@ -1353,7 +1448,8 @@ var ClawdianView = class extends import_obsidian.ItemView {
       { value: "local/qwen3.5:27b", label: "Local 27B" },
       { value: "bailian/qwen3-max-2026-01-23", label: "Qwen3 Max" },
       { value: "bailian/glm-5", label: "GLM-5" },
-      { value: "bailian/MiniMax-M2.5", label: "MiniMax" }
+      { value: "bailian/MiniMax-M2.5", label: "MiniMax" },
+      { value: "openai-codex/gpt-5.4", label: "GPT-5.4" }
     ];
     for (const m of models) {
       const opt = modelSelect.createEl("option", { text: m.label, attr: { value: m.value } });
@@ -1366,6 +1462,9 @@ var ClawdianView = class extends import_obsidian.ItemView {
       if (!this.isStreaming) {
         this.inputEl.value = selectedValue ? `/model ${selectedValue}` : `/model default`;
         await this.sendMessage();
+        // Persist selected model so it survives restart
+        this.plugin.settings.selectedModel = selectedValue;
+        await this.plugin.saveSettings();
         new import_obsidian.Notice(`Switching to ${selectedLabel}...`);
       } else {
         new import_obsidian.Notice("Wait for response to finish");
@@ -1392,16 +1491,16 @@ var ClawdianView = class extends import_obsidian.ItemView {
     if (convs.length === 0) {
       this.newConversation();
     } else {
+      // Restore all conversations as tabs (sorted by updatedAt desc)
+      const allIds = convs.map(c => c.id);
       const tabState = this.plugin.settings._tabState;
-      if (tabState?.tabs?.length > 0) {
-        this.openTabs = tabState.tabs.filter(id => this.plugin.conversationStore.getConversation(id));
-        if (this.openTabs.length === 0) this.openTabs = [convs[0].id];
-        const activeId = tabState.activeId;
-        this.switchToConversation(this.openTabs.includes(activeId) ? activeId : this.openTabs[0]);
-      } else {
-        this.openTabs = [convs[0].id];
-        this.switchToConversation(convs[0].id);
-      }
+      // Put previously open tabs first (preserving order), then append any new ones
+      const prevTabs = (tabState?.tabs || []).filter(id => allIds.includes(id));
+      const remaining = allIds.filter(id => !prevTabs.includes(id));
+      this.openTabs = [...prevTabs, ...remaining];
+      if (this.openTabs.length === 0) this.openTabs = [convs[0].id];
+      const activeId = tabState?.activeId;
+      this.switchToConversation(this.openTabs.includes(activeId) ? activeId : this.openTabs[0]);
     }
 
     this.updateContextRow();
@@ -1423,6 +1522,11 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
   startSelectionDetection() {
     this.selectionCheckInterval = setInterval(() => {
+      // When focus is inside the chat panel, freeze selection to preserve the chip
+      const activeEl = document.activeElement;
+      if (activeEl && this.containerEl && this.containerEl.contains(activeEl)) {
+        return; // User is interacting with chat — keep last selection
+      }
       const editor = this.getActiveEditor();
       if (!editor) {
         if (this.lastSelection) { this.lastSelection = ""; this.updateContextRow(); }
@@ -1478,50 +1582,116 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
   renderTabs() {
     this.tabBarEl.empty();
-    for (const convId of this.openTabs) {
-      const conv = this.plugin.conversationStore.getConversation(convId);
-      if (!conv) continue;
 
-      const tab = this.tabBarEl.createDiv({ cls: "oc-tab" + (convId === this.activeConvId ? " active" : "") });
-      const label = conv.title.length > 16 ? conv.title.slice(0, 16) + "\u2026" : conv.title;
-      tab.createSpan({ text: label });
+    // New Chat button
+    const newBtn = this.tabBarEl.createDiv({ cls: "oc-tab-new", attr: { title: "New Chat" } });
+    newBtn.createSpan({ text: "+" });
+    newBtn.addEventListener("click", () => this.newConversation());
 
-      if (this.openTabs.length > 1) {
-        const closeBtn = tab.createSpan({ cls: "oc-tab-close", text: "\u00D7" });
-        closeBtn.addEventListener("click", (e) => { e.stopPropagation(); this.closeTab(convId); });
-      }
+    // Current conversation title (clickable dropdown trigger)
+    const activeConv = this.plugin.conversationStore.getConversation(this.activeConvId);
+    const titleBtn = this.tabBarEl.createDiv({ cls: "oc-tab-title" });
+    const titleLabel = activeConv ? (activeConv.title.length > 24 ? activeConv.title.slice(0, 24) + "\u2026" : activeConv.title) : "New Chat";
+    titleBtn.createSpan({ text: titleLabel });
+    titleBtn.createSpan({ cls: "oc-tab-arrow", text: "\u25BE" });
+    if (this.isStreaming) titleBtn.addClass("streaming");
 
-      tab.addEventListener("click", () => this.switchToConversation(convId));
+    titleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.toggleConversationList();
+    });
 
-      // Right-click context menu
-      tab.addEventListener("contextmenu", (e) => {
+    // Right-click on title for rename/delete
+    titleBtn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      if (!activeConv) return;
+      const menu = new import_obsidian.Menu();
+      menu.addItem(item => item.setTitle("Rename").setIcon("pencil").onClick(() => {
+        new RenameModal(this.app, activeConv.title, (newTitle) => {
+          if (newTitle) {
+            this.plugin.conversationStore.updateTitle(this.activeConvId, newTitle);
+            this.plugin.conversationStore.saveConversation(this.activeConvId);
+            this.renderTabs();
+          }
+        }).open();
+      }));
+      menu.addSeparator();
+      menu.addItem(item => item.setTitle("Delete").setIcon("trash").onClick(() => {
+        this.deleteConversation(this.activeConvId);
+      }));
+      menu.showAtMouseEvent(e);
+    });
+  }
+
+  toggleConversationList() {
+    // Remove existing dropdown if open
+    const existing = this.tabBarEl.parentElement.querySelector('.oc-conv-dropdown');
+    if (existing) { existing.remove(); return; }
+
+    const allConvs = this.plugin.conversationStore.getAllConversations();
+    const header = this.tabBarEl.parentElement;
+    header.style.position = 'relative';
+    const dropdown = header.createDiv({ cls: "oc-conv-dropdown" });
+
+    for (const conv of allConvs) {
+      const item = dropdown.createDiv({ cls: "oc-conv-item" + (conv.id === this.activeConvId ? " active" : "") });
+
+      const info = item.createDiv({ cls: "oc-conv-info" });
+      const title = conv.title.length > 30 ? conv.title.slice(0, 30) + "\u2026" : conv.title;
+      info.createDiv({ cls: "oc-conv-title", text: title });
+      const date = new Date(conv.updatedAt);
+      const dateStr = `${date.getMonth()+1}/${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+      const msgCount = conv.messages ? conv.messages.length : 0;
+      info.createDiv({ cls: "oc-conv-meta", text: `${dateStr} \u00B7 ${msgCount} msgs` });
+
+      item.addEventListener("click", () => {
+        dropdown.remove();
+        if (!this.openTabs.includes(conv.id)) this.openTabs = [...this.openTabs, conv.id];
+        this.switchToConversation(conv.id);
+      });
+
+      // Right-click for rename/delete
+      item.addEventListener("contextmenu", (e) => {
         e.preventDefault();
         const menu = new import_obsidian.Menu();
-        menu.addItem(item => item.setTitle("Rename").setIcon("pencil").onClick(() => {
+        menu.addItem(i => i.setTitle("Rename").setIcon("pencil").onClick(() => {
           new RenameModal(this.app, conv.title, (newTitle) => {
             if (newTitle) {
-              this.plugin.conversationStore.updateTitle(convId, newTitle);
-              this.plugin.conversationStore.saveConversation(convId);
+              this.plugin.conversationStore.updateTitle(conv.id, newTitle);
+              this.plugin.conversationStore.saveConversation(conv.id);
+              dropdown.remove();
               this.renderTabs();
             }
           }).open();
         }));
-        menu.addItem(item => item.setTitle("Close").setIcon("x").onClick(() => this.closeTab(convId)));
-        if (this.openTabs.length > 1) {
-          menu.addItem(item => item.setTitle("Close others").setIcon("x-circle").onClick(() => {
-            this.openTabs = [convId];
-            this.switchToConversation(convId);
-          }));
-        }
         menu.addSeparator();
-        menu.addItem(item => item.setTitle("Delete").setIcon("trash").onClick(() => {
-          this.deleteConversation(convId);
+        menu.addItem(i => i.setTitle("Delete").setIcon("trash").onClick(() => {
+          dropdown.remove();
+          this.deleteConversation(conv.id);
         }));
         menu.showAtMouseEvent(e);
       });
-
-      if (this.isStreaming && convId === this.activeConvId) tab.addClass("streaming");
     }
+
+    // Close dropdown on outside click or Escape
+    const closeHandler = (e) => {
+      if (!dropdown.contains(e.target) && !this.tabBarEl.contains(e.target)) {
+        dropdown.remove();
+        document.removeEventListener("click", closeHandler);
+        document.removeEventListener("keydown", escHandler);
+      }
+    };
+    const escHandler = (e) => {
+      if (e.key === "Escape") {
+        dropdown.remove();
+        document.removeEventListener("click", closeHandler);
+        document.removeEventListener("keydown", escHandler);
+      }
+    };
+    setTimeout(() => {
+      document.addEventListener("click", closeHandler);
+      document.addEventListener("keydown", escHandler);
+    }, 0);
   }
 
   newConversation() {
@@ -1599,11 +1769,10 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     const msgEl = this.messagesEl.createDiv({ cls: `oc-message oc-message-${role}` });
 
-    // Role label
+    // Role label (assistant only — user messages are visually distinct via alignment + background)
     if (role === "assistant") {
       msgEl.createDiv({ cls: "oc-role-label", text: "\uD83E\uDD9E Clawdian" });
     } else if (role === "user") {
-      msgEl.createDiv({ cls: "oc-role-label oc-role-user", text: "You" });
       // Render images ABOVE user message bubble (Claudian-style)
       const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
       if (conv && typeof msgIndex === "number") {
@@ -1650,19 +1819,9 @@ var ClawdianView = class extends import_obsidian.ItemView {
       lines.forEach((line, i) => { contentEl.appendText(line); if (i < lines.length - 1) contentEl.createEl("br"); });
     }
 
-    // Message actions
+    // Message actions — Claudian style: small icon row, right-aligned
     if (role === "assistant" || role === "user") {
       const actionsEl = msgEl.createDiv({ cls: "oc-message-actions" });
-
-      // Copy
-      const copyBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Copy" } });
-      setIconSafe(copyBtn, "copy");
-      copyBtn.addEventListener("click", async () => {
-        await navigator.clipboard.writeText(content);
-        setIconSafe(copyBtn, "check");
-        copyBtn.addClass("copied");
-        setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
-      });
 
       if (role === "user" && typeof msgIndex === "number") {
         // Edit & resend
@@ -1687,32 +1846,34 @@ var ClawdianView = class extends import_obsidian.ItemView {
           this.resendLastUserMessage();
         });
       }
-    }
 
-    // Refresh button for assistant messages (Phase 2, item 8)
-    if (role === "assistant") {
-      const refreshBtn = msgEl.createEl("button", { cls: "oc-refresh-btn" });
-      const refreshIcon = refreshBtn.createSpan();
-      setIconSafe(refreshIcon, "refresh-cw", "14");
-      refreshBtn.createSpan({ text: " Refresh current file" });
-      refreshBtn.addEventListener("click", () => {
-        const activeFile = this.app.workspace.getActiveFile();
-        if (activeFile) {
-          // Force Obsidian to re-read the file from disk
-          this.app.vault.adapter.read(activeFile.path).then(content => {
-            const file = this.app.vault.getAbstractFileByPath(activeFile.path);
-            if (file instanceof import_obsidian.TFile) {
-              this.app.vault.modify(file, content);
-              new import_obsidian.Notice(`Refreshed: ${activeFile.basename}`);
-            }
-          }).catch(() => {
-            new import_obsidian.Notice("Failed to refresh file");
-          });
-        } else {
-          new import_obsidian.Notice("No active file to refresh");
-        }
+      // Copy (always last)
+      const copyBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Copy" } });
+      setIconSafe(copyBtn, "copy");
+      copyBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(content);
+        setIconSafe(copyBtn, "check");
+        copyBtn.addClass("copied");
+        setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
       });
     }
+
+    // Navigation arrows — right edge, Claudian style
+    const navEl = msgEl.createDiv({ cls: "oc-message-nav" });
+    const upBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll to previous message" } });
+    setIconSafe(upBtn, "chevron-up");
+    upBtn.addEventListener("click", () => {
+      const prev = msgEl.previousElementSibling;
+      if (prev) prev.scrollIntoView({ behavior: "smooth", block: "start" });
+      else this.messagesEl.scrollTop = 0;
+    });
+    const downBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll to next message" } });
+    setIconSafe(downBtn, "chevron-down");
+    downBtn.addEventListener("click", () => {
+      const next = msgEl.nextElementSibling;
+      if (next) next.scrollIntoView({ behavior: "smooth", block: "start" });
+      else this.scrollToBottom();
+    });
 
     if (this.autoScrollEnabled) this.scrollToBottom();
     return msgEl;
@@ -1783,17 +1944,8 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.streamingContentEl.empty();
     import_obsidian.MarkdownRenderer.render(this.app, fullText, this.streamingContentEl, "", this.plugin);
 
-    // Add action buttons
+    // Add action buttons — Claudian style: regenerate, then copy
     const actionsEl = this.streamingEl.createDiv({ cls: "oc-message-actions" });
-
-    const copyBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Copy" } });
-    setIconSafe(copyBtn, "copy");
-    copyBtn.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(fullText);
-      setIconSafe(copyBtn, "check");
-      copyBtn.addClass("copied");
-      setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
-    });
 
     const regenBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Regenerate" } });
     setIconSafe(regenBtn, "refresh-cw");
@@ -1807,27 +1959,28 @@ var ClawdianView = class extends import_obsidian.ItemView {
       }
     });
 
-    // Refresh file button
-    const refreshBtn = this.streamingEl.createEl("button", { cls: "oc-refresh-btn" });
-    const refreshIcon = refreshBtn.createSpan();
-    setIconSafe(refreshIcon, "refresh-cw", "14");
-    refreshBtn.createSpan({ text: " Refresh current file" });
-    refreshBtn.addEventListener("click", () => {
-      const activeFile = this.app.workspace.getActiveFile();
-      if (activeFile) {
-        this.app.vault.adapter.read(activeFile.path).then(content => {
-          const file = this.app.vault.getAbstractFileByPath(activeFile.path);
-          if (file instanceof import_obsidian.TFile) {
-            this.app.vault.modify(file, content);
-            new import_obsidian.Notice(`Refreshed: ${activeFile.basename}`);
-          }
-        }).catch(() => {
-          new import_obsidian.Notice("Failed to refresh file");
-        });
-      } else {
-        new import_obsidian.Notice("No active file to refresh");
-      }
+    const copyBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Copy" } });
+    setIconSafe(copyBtn, "copy");
+    copyBtn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(fullText);
+      setIconSafe(copyBtn, "check");
+      copyBtn.addClass("copied");
+      setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
     });
+
+    // Navigation arrows
+    const streamEl = this.streamingEl;
+    const navEl = streamEl.createDiv({ cls: "oc-message-nav" });
+    const upBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll up" } });
+    setIconSafe(upBtn, "chevron-up");
+    upBtn.addEventListener("click", () => {
+      const prev = streamEl.previousElementSibling;
+      if (prev) prev.scrollIntoView({ behavior: "smooth", block: "start" });
+      else this.messagesEl.scrollTop = 0;
+    });
+    const downBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll down" } });
+    setIconSafe(downBtn, "chevron-down");
+    downBtn.addEventListener("click", () => this.scrollToBottom());
 
     this.streamingEl = null;
     this.streamingContentEl = null;
@@ -1867,28 +2020,80 @@ var ClawdianView = class extends import_obsidian.ItemView {
     let userContent = content;
     const contextParts = [];
 
-    // @ mentioned files (Phase 1: 16000 char limit)
+    // @ mentioned files — large files get reference-only treatment
     if (this.attachedFiles.length > 0) {
+      const LARGE_FILE_THRESHOLD = 30000;
+      const vaultPath = getVaultBasePath(this.app);
       for (const file of this.attachedFiles) {
         try {
           const fileContent = await this.app.vault.read(file);
-          const truncated = fileContent.length > 16000;
-          contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent.slice(0, 16000)}${truncated ? '\n... (truncated)' : ''}\n\`\`\``);
+          if (fileContent.length > LARGE_FILE_THRESHOLD) {
+            // Large file: auto-search with vault_search.py (Direction B)
+            const fullPath = vaultPath ? vaultPath + '\\' + file.path.replace(/\//g, '\\') : file.path;
+            const charCount = fileContent.length;
+            const lineCount = fileContent.split('\n').length;
+            let searchResult = '';
+            try {
+              const { execFileSync } = require('child_process');
+              const result = execFileSync('python', [
+                'E:\\openclaw-work\\clawdian\\vault_search.py',
+                '--query', content,
+                '--path', fullPath,
+                '--context', '15',
+                '--max-chars', '15000'
+              ], { encoding: 'utf-8', timeout: 30000 });
+              searchResult = result.trim();
+            } catch (e) {
+              searchResult = '[vault_search 执行失败: ' + (e.message || '').slice(0, 200) + ']';
+            }
+            if (searchResult && !searchResult.startsWith('[vault_search 执行失败')) {
+              contextParts.push(`[大文件附件: ${file.path}]（${charCount} 字符，${lineCount} 行）\n以下是根据用户问题自动搜索到的相关段落：\n\n${searchResult}`);
+            } else {
+              contextParts.push(`[大文件附件: ${file.path}]（${charCount} 字符，${lineCount} 行）\n${searchResult}\n⚠️ 自动搜索未找到结果或失败。如需手动搜索，请用 exec 执行：\npython E:\\openclaw-work\\clawdian\\vault_search.py --query "关键词" --path "${fullPath}"`);
+            }
+          } else {
+            // Normal file: inline content
+            contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent}\n\`\`\``);
+          }
         } catch (e) {}
       }
       this.attachedFiles = [];
     }
 
-    // Current note (Phase 1: 16000 char limit)
+    // Current note — same large file threshold as attachments
     if (this.plugin.settings.includeCurrentNote) {
+      const LARGE_FILE_THRESHOLD = 30000;
       const activeFile = this.app.workspace.getActiveFile();
       if (activeFile instanceof import_obsidian.TFile && activeFile.extension === "md") {
         if (!activeFile.path.startsWith(this.plugin.settings.conversationsPath || "Clawdian/conversations")) {
           try {
             const noteContent = await this.app.vault.read(activeFile);
             if (noteContent.trim()) {
-              const truncated = noteContent.length > 16000;
-              contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent.slice(0, 16000)}${truncated ? '\n... (truncated, total ' + noteContent.length + ' chars)' : ''}\n\`\`\``);
+              if (noteContent.length > LARGE_FILE_THRESHOLD) {
+                const cvaultPath = getVaultBasePath(this.app);
+                const fullPath = cvaultPath ? cvaultPath + '\\' + activeFile.path.replace(/\//g, '\\') : activeFile.path;
+                let searchResult = '';
+                try {
+                  const { execFileSync } = require('child_process');
+                  const result = execFileSync('python', [
+                    'E:\\openclaw-work\\clawdian\\vault_search.py',
+                    '--query', content,
+                    '--path', fullPath,
+                    '--context', '15',
+                    '--max-chars', '15000'
+                  ], { encoding: 'utf-8', timeout: 30000 });
+                  searchResult = result.trim();
+                } catch (e) {
+                  searchResult = '[vault_search 执行失败: ' + (e.message || '').slice(0, 200) + ']';
+                }
+                if (searchResult && !searchResult.startsWith('[vault_search 执行失败')) {
+                  contextParts.push(`[当前查看: ${activeFile.path}]（${noteContent.length} 字符，大文件）\n以下是根据用户问题自动搜索到的相关段落：\n\n${searchResult}`);
+                } else {
+                  contextParts.push(`[当前查看: ${activeFile.path}]（${noteContent.length} 字符，大文件）\n${searchResult}`);
+                }
+              } else {
+                contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent}\n\`\`\``);
+              }
             }
           } catch (e) {}
         }
@@ -1902,6 +2107,9 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     if (contextParts.length > 0) userContent += "\n\n" + contextParts.join("\n\n");
 
+    // Capture images before clearing (fix: must snapshot before clearing)
+    const messageImages = this.pastedImages.map(img => img.data);
+
     // Handle images — build multimodal content
     let apiContent = userContent;
     if (this.pastedImages.length > 0) {
@@ -1914,11 +2122,8 @@ var ClawdianView = class extends import_obsidian.ItemView {
           image_url: { url: img.data }
         });
       }
-      this.pastedImages = [];
     }
-
-    // Capture images before clearing
-    const messageImages = this.pastedImages.map(img => img.data);
+    this.pastedImages = [];
 
     // Add to store & render
     if (!isResend) {

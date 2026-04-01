@@ -220,7 +220,7 @@ var ClawdianAPI = class {
     const parsedUrl = new URL(`${this.settings.gatewayUrl}/v1/chat/completions`);
     const token = this.getToken();
     const body = JSON.stringify({
-      model: "openclaw",
+      model: "openclaw/obsidian",
       messages: messages,
       stream: true
     });
@@ -312,7 +312,7 @@ var ClawdianAPI = class {
     const response = await (0, import_obsidian.requestUrl)({
       url, method: "POST",
       headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "x-openclaw-scopes": "operator.admin,operator.read,operator.write" },
-      body: JSON.stringify({ model: "openclaw", messages, stream: false })
+      body: JSON.stringify({ model: "openclaw/obsidian", messages, stream: false })
     });
     if (response.status >= 400) throw new Error(`HTTP ${response.status}: ${response.text}`);
     return response.json?.choices?.[0]?.message?.content || "";
@@ -1440,7 +1440,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
     // Model selector dropdown
     const modelSelect = toolbarRight.createEl("select", { cls: "oc-model-select" });
     const models = [
-      { value: "", label: "Default \u2728" },
+      { value: "", label: "Default (Obsidian) \u2728" },
       { value: "bailian/qwen3.5-plus", label: "Qwen3.5+" },
       { value: "bailian/kimi-k2.5", label: "Kimi K2.5" },
       { value: "zenmux-anthropic/anthropic/claude-opus-4.6", label: "Opus 4.6" },

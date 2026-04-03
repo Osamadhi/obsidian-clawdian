@@ -111,28 +111,37 @@ function listSiblingFiles(app, file) {
   return file.parent.children.map(c => c.name).sort();
 }
 
-function buildSystemPrompt(app) {
+function buildSystemPrompt(app, settings) {
   const vaultPath = getVaultBasePath(app);
   const activeFile = app.workspace.getActiveFile();
-  let prompt = `你正在 Obsidian vault 中协助用户编辑笔记。\n`;
-  if (vaultPath) prompt += `Vault 路径: ${vaultPath}\n`;
+  let prompt = `You are an AI assistant inside an Obsidian vault, helping the user manage notes.\n`;
+  if (vaultPath) prompt += `Vault path: ${vaultPath}\n`;
   if (activeFile) {
-    const fullPath = vaultPath ? `${vaultPath}\\${activeFile.path.replace(/\//g, '\\')}` : activeFile.path;
-    prompt += `当前文件: ${activeFile.path}（完整路径: ${fullPath}）\n`;
+    const fullPath = vaultPath ? `${vaultPath}/${activeFile.path}` : activeFile.path;
+    prompt += `Current file: ${activeFile.path} (full path: ${fullPath})\n`;
     const siblings = listSiblingFiles(app, activeFile);
     if (siblings.length > 0) {
-      prompt += `当前目录内容:\n${siblings.map(s => `  - ${s}`).join('\n')}\n`;
+      prompt += `Files in current directory:\n${siblings.map(s => `  - ${s}`).join('\n')}\n`;
     }
   }
-  prompt += `\n你可以使用 read/write/edit 工具直接操作 vault 中的文件。\n`;
+  prompt += `\nYou can use read/write/edit tools to operate on vault files.\n`;
   if (vaultPath) {
-    prompt += `- 修改文件: 用 edit 工具，路径用完整路径如 "${vaultPath}\\文件名.md"\n`;
+    prompt += `- Edit files: use the edit tool with full path like "${vaultPath}/${activeFile ? activeFile.path : 'filename.md'}"\n`;
   }
-  prompt += `- 创建文件: 用 write 工具\n- 读取文件: 用 read 工具\n文件修改后 Obsidian 会自动检测到变化。\n`;
-  prompt += `\n## 大文件处理\n`;
-  prompt += `大文件（>30K字符）会自动根据用户问题搜索相关段落，搜索结果已包含在附件上下文中。\n`;
-  prompt += `如果搜索结果不够，可用 exec 执行 vault_search.py 手动补充搜索，或用 read 工具读取指定行范围。\n`;
-  prompt += `手动搜索命令: python E:\\\\openclaw-work\\\\clawdian\\\\vault_search.py --query "关键词" --path "文件路径"\n`;
+  prompt += `- Create files: use write tool\n- Read files: use read tool\nObsidian auto-detects file changes.\n`;
+  prompt += `\n## Large file search\n`;
+  prompt += `When a large file is attached (marked [Large file]), use exec + rg (ripgrep) to search:\n`;
+  prompt += `  exec: rg -i -F -C 5 "keyword" "filepath"\n`;
+  prompt += `Flags: -i (ignore case), -F (literal string, not regex), -C 5 (5 lines context)\n`;
+  prompt += `Strategy:\n`;
+  prompt += `1. Extract the core keyword from the user's question (not the whole sentence)\n`;
+  prompt += `2. Search with rg. If 0 results, try synonyms or related terms and search again\n`;
+  prompt += `3. Once you find matches, use read tool with offset/limit to get full context around the matches\n`;
+  prompt += `4. For Chinese text: try both the exact term and common variants (e.g. 成作智 → 成所作智)\n`;
+  prompt += `\n## Selection Context\n`;
+  prompt += `User messages may include an \`<editor_selection>\` tag showing text the user selected:\n`;
+  prompt += `\`\`\`\n<editor_selection path="path/to/file.md" lines="10-15">\nselected text here\n</editor_selection>\n\`\`\`\n`;
+  prompt += `**When present:** The user selected this text before sending their message. Use this context to understand what they're referring to. Address the selected content directly in your response.\n`;
   return prompt;
 }
 
@@ -181,6 +190,7 @@ var SLASH_COMMANDS = [
   { command: '/summarize', label: '/summarize', description: '总结当前文件' },
   { command: '/expand', label: '/expand', description: '扩展选中内容' },
   { command: '/fix', label: '/fix', description: '修正语法错误' },
+  { command: '/compact', label: '/compact', description: '压缩对话历史（节省 token）' },
 ];
 
 // ============================================
@@ -190,7 +200,14 @@ var DEFAULT_SETTINGS = {
   gatewayUrl: "http://127.0.0.1:18789",
   gatewayTokenEncrypted: null,
   gatewayTokenPlaintext: "",
+  defaultModel: "openclaw/obsidian",
+  scopes: "operator.admin,operator.read,operator.write",
+  vaultSearchPath: "",
+  customModels: [],
+  streamMarkdown: false,
   showActionsInChat: true,
+  customCommands: [],
+  commandUsage: {},
   auditLogEnabled: false,
   auditLogPath: "Clawdian/audit-log.md",
   includeCurrentNote: true,
@@ -220,7 +237,7 @@ var ClawdianAPI = class {
     const parsedUrl = new URL(`${this.settings.gatewayUrl}/v1/chat/completions`);
     const token = this.getToken();
     const body = JSON.stringify({
-      model: "openclaw/obsidian",
+      model: this.settings.defaultModel || "openclaw/obsidian",
       messages: messages,
       stream: true
     });
@@ -239,7 +256,7 @@ var ClawdianAPI = class {
           "Authorization": `Bearer ${token}`,
           "Content-Type": "application/json",
           "Accept": "text/event-stream",
-          "x-openclaw-scopes": "operator.admin,operator.read,operator.write"
+          ...(this.settings.scopes ? { "x-openclaw-scopes": this.settings.scopes } : {})
         }
       }, (res) => {
         if (res.statusCode >= 400) {
@@ -311,12 +328,13 @@ var ClawdianAPI = class {
     messages.push({ role: "user", content: message });
     const response = await (0, import_obsidian.requestUrl)({
       url, method: "POST",
-      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", "x-openclaw-scopes": "operator.admin,operator.read,operator.write" },
-      body: JSON.stringify({ model: "openclaw/obsidian", messages, stream: false })
+      headers: { "Authorization": `Bearer ${token}`, "Content-Type": "application/json", ...(this.settings.scopes ? { "x-openclaw-scopes": this.settings.scopes } : {}) },
+      body: JSON.stringify({ model: this.settings.defaultModel || "openclaw/obsidian", messages, stream: false })
     });
     if (response.status >= 400) throw new Error(`HTTP ${response.status}: ${response.text}`);
     return response.json?.choices?.[0]?.message?.content || "";
   }
+
 };
 
 // ============================================
@@ -333,7 +351,7 @@ var ConversationStore = class {
 
   createConversation(title) {
     const id = this.generateId();
-    const conv = { id, title: title || "New Chat", messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+    const conv = { id, title: title || "New Chat", messages: [], model: "", createdAt: Date.now(), updatedAt: Date.now() };
     this.conversations.set(id, conv);
     return conv;
   }
@@ -357,6 +375,7 @@ var ConversationStore = class {
     conv.updatedAt = Date.now();
     if (conv.title === "New Chat" && role === "user") {
       conv.title = content.slice(0, 40) + (content.length > 40 ? "..." : "");
+      conv._autoTitled = true;
     }
   }
 
@@ -625,7 +644,7 @@ function setIconSafe(el, iconName, size) {
     // Always force SVG size via inline style (Obsidian's default is too small for action buttons)
     var svg = el.querySelector("svg") || el.querySelector(".svg-icon");
     if (svg) {
-      var s = size || "18";
+      var s = size || "16";
       svg.style.width = s + "px";
       svg.style.height = s + "px";
       svg.style.minWidth = s + "px";
@@ -651,6 +670,7 @@ var FileMentionPopup = class {
     this.selectedIndex = 0;
     this.active = false;
     this.mentionStart = -1;
+    this.currentQuery = "";
   }
 
   show(cursorPos) {
@@ -661,10 +681,21 @@ var FileMentionPopup = class {
     if (!this.popupEl) {
       this.popupEl = document.createElement("div");
       this.popupEl.addClass("oc-mention-popup");
-      this.inputEl.parentElement.appendChild(this.popupEl);
+      document.body.appendChild(this.popupEl);
     }
+    this._reposition();
     this.popupEl.style.display = "block";
     this.updateList("");
+  }
+
+  _reposition() {
+    if (!this.popupEl) return;
+    const rect = this.inputEl.getBoundingClientRect();
+    this.popupEl.style.position = "fixed";
+    this.popupEl.style.left = rect.left + "px";
+    this.popupEl.style.width = rect.width + "px";
+    this.popupEl.style.bottom = (window.innerHeight - rect.top) + "px";
+    this.popupEl.style.top = "";
   }
 
   hide() {
@@ -744,14 +775,20 @@ var FileMentionPopup = class {
   handleInput() {
     if (!this.active) return;
     const val = this.inputEl.value;
+    // Hide if @ was deleted or cursor moved before it
+    if (val[this.mentionStart] !== "@" || this.inputEl.selectionStart <= this.mentionStart) {
+      this.hide();
+      return;
+    }
     const query = val.slice(this.mentionStart + 1, this.inputEl.selectionStart);
     if (query.includes(" ") && query.length > 20) { this.hide(); return; }
+    this.currentQuery = query;
     this.selectedIndex = 0;
     this.updateList(query);
   }
 
   select(file) {
-    this.onSelect(file, this.mentionStart);
+    this.onSelect(file, this.mentionStart, this.currentQuery);
     this.hide();
   }
 };
@@ -760,8 +797,9 @@ var FileMentionPopup = class {
 // Slash Command Popup
 // ============================================
 var SlashCommandPopup = class {
-  constructor(inputEl, onSelect) {
+  constructor(inputEl, plugin, onSelect) {
     this.inputEl = inputEl;
+    this.plugin = plugin;
     this.onSelect = onSelect;
     this.popupEl = null;
     this.items = [];
@@ -776,10 +814,21 @@ var SlashCommandPopup = class {
     if (!this.popupEl) {
       this.popupEl = document.createElement("div");
       this.popupEl.addClass("oc-slash-popup");
-      this.inputEl.parentElement.appendChild(this.popupEl);
+      document.body.appendChild(this.popupEl);
     }
+    this._reposition();
     this.popupEl.style.display = "block";
     this.updateList(query);
+  }
+
+  _reposition() {
+    if (!this.popupEl) return;
+    const rect = this.inputEl.getBoundingClientRect();
+    this.popupEl.style.position = "fixed";
+    this.popupEl.style.left = rect.left + "px";
+    this.popupEl.style.width = rect.width + "px";
+    this.popupEl.style.bottom = (window.innerHeight - rect.top) + "px";
+    this.popupEl.style.top = "";
   }
 
   hide() {
@@ -792,9 +841,20 @@ var SlashCommandPopup = class {
     this.popupEl.empty();
 
     const q = (query || "").toLowerCase().replace(/^\//, '');
-    this.items = SLASH_COMMANDS.filter(c =>
-      !q || c.command.toLowerCase().includes(q) || c.description.toLowerCase().includes(q)
-    );
+    const userCmds = (this.plugin?.settings?.customCommands || [])
+      .filter(c => c.inSlash)
+      .map(c => ({
+        command: "/" + c.name.toLowerCase().replace(/\s+/g, "-"),
+        label: "/" + c.name.toLowerCase().replace(/\s+/g, "-"),
+        description: c.name,
+        prompt: c.prompt,
+        isCustom: true
+      }));
+    const allCmds = [...SLASH_COMMANDS, ...userCmds];
+    const usage = this.plugin?.settings?.commandUsage || {};
+    this.items = allCmds
+      .filter(c => !q || c.command.toLowerCase().includes(q) || c.description.toLowerCase().includes(q))
+      .sort((a, b) => (usage[b.command] || 0) - (usage[a.command] || 0));
 
     if (this.items.length === 0) { this.hide(); return; }
 
@@ -856,6 +916,12 @@ var SlashCommandPopup = class {
   }
 
   select(cmd) {
+    if (this.plugin?.settings) {
+      const usage = this.plugin.settings.commandUsage || {};
+      usage[cmd.command] = (usage[cmd.command] || 0) + 1;
+      this.plugin.settings.commandUsage = usage;
+      this.plugin.saveSettings();
+    }
     this.onSelect(cmd);
     this.hide();
   }
@@ -911,13 +977,34 @@ var inlineEditField = cm_state.StateField.define({
   provide(field) { return cm_view.EditorView.decorations.from(field); }
 });
 
+// Single shared effects + field for selection highlight (same pattern as inlineEditField)
+var selectionHighlightShowEffect = cm_state.StateEffect.define();
+var selectionHighlightHideEffect = cm_state.StateEffect.define();
+var selectionHighlightField = cm_state.StateField.define({
+  create() { return cm_view.Decoration.none; },
+  update(value, tr) {
+    value = value.map(tr.changes);
+    for (let e of tr.effects) {
+      if (e.is(selectionHighlightShowEffect)) {
+        const builder = new cm_state.RangeSetBuilder();
+        builder.add(e.value.from, e.value.to, cm_view.Decoration.mark({ class: "oc-selection-highlight" }));
+        return builder.finish();
+      } else if (e.is(selectionHighlightHideEffect)) {
+        return cm_view.Decoration.none;
+      }
+    }
+    return value;
+  },
+  provide(field) { return cm_view.EditorView.decorations.from(field); }
+});
+
 var InlineEditManager = class {
   constructor(plugin) {
     this.plugin = plugin;
     this.activeWidget = null;
     this.activeDiff = null;
-    // Register the shared StateField once for all editor views
-    this.plugin.registerEditorExtension([inlineEditField]);
+    // Register shared StateFields once for all editor views
+    this.plugin.registerEditorExtension([inlineEditField, selectionHighlightField]);
   }
 
   getActiveEditorView() {
@@ -975,6 +1062,13 @@ var InlineEditManager = class {
     spinner.style.display = "none";
     container.appendChild(spinner);
 
+    const cancelBtn = document.createElement("button");
+    cancelBtn.addClass("oc-inline-cancel");
+    cancelBtn.textContent = "×";
+    cancelBtn.addEventListener("mousedown", (e) => { e.stopPropagation(); e.preventDefault(); });
+    cancelBtn.addEventListener("click", (e) => { e.stopPropagation(); self.clearWidget(); });
+    container.appendChild(cancelBtn);
+
     // Create CM6 widget
     const self = this;
     const widgetDeco = cm_view.Decoration.widget({
@@ -996,8 +1090,9 @@ var InlineEditManager = class {
     // Focus input after a tick
     setTimeout(() => input.focus(), 50);
 
-    // Handle input events
+    // Handle input events — stopPropagation prevents CM6 from intercepting keystrokes
     input.addEventListener("keydown", async (e) => {
+      e.stopPropagation();
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         const instruction = input.value.trim();
@@ -1018,6 +1113,12 @@ var InlineEditManager = class {
       } else if (e.key === "Escape") {
         self.clearWidget();
       }
+    });
+
+    // Re-focus input on click (in case editor stole focus)
+    container.addEventListener("mousedown", (e) => {
+      e.stopPropagation();
+      setTimeout(() => input.focus(), 0);
     });
   }
 
@@ -1095,6 +1196,7 @@ var InlineEditManager = class {
       const widgetDeco = cm_view.Decoration.widget({
         widget: new (class extends cm_view.WidgetType {
           toDOM() { return container; }
+          eq() { return true; }
           ignoreEvent() { return false; }
         })(),
         side: 1,
@@ -1164,6 +1266,7 @@ var InlineEditManager = class {
       const widgetDeco = cm_view.Decoration.widget({
         widget: new (class extends cm_view.WidgetType {
           toDOM() { return container; }
+          eq() { return true; }
           ignoreEvent() { return false; }
         })(),
         side: 1,
@@ -1241,14 +1344,24 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.mentionPopup = null;
     this.slashPopup = null;
     this.attachedFiles = []; // files attached via @
+    this.attachedTextFiles = []; // non-vault files attached via button
     this.pastedImages = []; // images pasted/dropped
     this.selectionCheckInterval = null;
-    this.lastSelection = "";
+    this.storedSelection = null; // { notePath, selectedText, lineCount, startLine, from, to, editorView }
+    this.inputHandoffGraceUntil = null;
+    this.inputHistory = [];
+    this.inputHistoryIndex = -1;
+    this.inputDraft = "";
   }
 
   getViewType() { return CLAWDIAN_VIEW_TYPE; }
   getDisplayText() { return "Clawdian"; }
   getIcon() { return "clawdian-lobster"; }
+
+  onClose() {
+    if (this.slashPopup?.popupEl) this.slashPopup.popupEl.remove();
+    if (this.mentionPopup?.popupEl) this.mentionPopup.popupEl.remove();
+  }
 
   async onOpen() {
     try { await this._onOpen(); }
@@ -1270,10 +1383,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const header = container.createDiv({ cls: "oc-header" });
     this.tabBarEl = header.createDiv({ cls: "oc-tab-bar" });
     const actions = header.createDiv({ cls: "oc-header-actions" });
-
-    const newBtn = actions.createEl("button", { cls: "oc-header-btn", attr: { "aria-label": "New Chat" } });
-    setIconSafe(newBtn, "plus");
-    newBtn.addEventListener("click", () => this.newConversation());
 
     const clearBtn = actions.createEl("button", { cls: "oc-header-btn", attr: { "aria-label": "Delete Chat" } });
     setIconSafe(clearBtn, "trash-2");
@@ -1325,13 +1434,15 @@ var ClawdianView = class extends import_obsidian.ItemView {
     });
 
     // @ mention support
-    this.mentionPopup = new FileMentionPopup(this.app, this.inputEl, (file, mentionStart) => {
+    this.mentionPopup = new FileMentionPopup(this.app, this.inputEl, (file, mentionStart, query) => {
       const val = this.inputEl.value;
-      const cursorPos = this.inputEl.selectionStart;
+      // Remove the @query text entirely — file is shown as a chip instead
+      const queryEnd = mentionStart + 1 + query.length;
       const before = val.slice(0, mentionStart);
-      const after = val.slice(cursorPos);
-      this.inputEl.value = before + `@${file.basename} ` + after;
-      this.inputEl.selectionStart = this.inputEl.selectionEnd = before.length + file.basename.length + 2;
+      const after = val.slice(queryEnd);
+      this.inputEl.value = before + after;
+      this.inputEl.selectionStart = this.inputEl.selectionEnd = before.length;
+      this.autoResizeInput();
       this.inputEl.focus();
       if (!this.attachedFiles.find(f => f.path === file.path)) {
         this.attachedFiles.push(file);
@@ -1340,8 +1451,14 @@ var ClawdianView = class extends import_obsidian.ItemView {
     });
 
     // Slash command popup
-    this.slashPopup = new SlashCommandPopup(this.inputEl, (cmd) => {
-      this.inputEl.value = cmd.command + " ";
+    this.slashPopup = new SlashCommandPopup(this.inputEl, this.plugin, (cmd) => {
+      if (cmd.isCustom) {
+        const sel = this.storedSelection?.selectedText || "";
+        this.inputEl.value = cmd.prompt.replace(/\{\{text\}\}/g, sel);
+      } else {
+        this.inputEl.value = cmd.command + " ";
+      }
+      this.autoResizeInput();
       this.inputEl.focus();
       this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
     });
@@ -1355,6 +1472,35 @@ var ClawdianView = class extends import_obsidian.ItemView {
       if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
         this.sendMessage();
+        return;
+      }
+
+      // Input history navigation (ArrowUp/Down, only when on first/last line)
+      if (e.key === "ArrowUp" && !e.shiftKey && this.inputHistory.length > 0) {
+        const val = this.inputEl.value;
+        const cursor = this.inputEl.selectionStart;
+        const onFirstLine = val.indexOf("\n") === -1 || cursor <= val.indexOf("\n");
+        if (onFirstLine) {
+          e.preventDefault();
+          if (this.inputHistoryIndex === -1) this.inputDraft = val;
+          this.inputHistoryIndex = Math.min(this.inputHistoryIndex + 1, this.inputHistory.length - 1);
+          this.inputEl.value = this.inputHistory[this.inputHistoryIndex];
+          this.autoResizeInput();
+          this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
+        }
+        return;
+      }
+      if (e.key === "ArrowDown" && !e.shiftKey && this.inputHistoryIndex > -1) {
+        const val = this.inputEl.value;
+        const cursor = this.inputEl.selectionStart;
+        const onLastLine = val.lastIndexOf("\n") === -1 || cursor > val.lastIndexOf("\n");
+        if (onLastLine) {
+          e.preventDefault();
+          this.inputHistoryIndex--;
+          this.inputEl.value = this.inputHistoryIndex === -1 ? this.inputDraft : this.inputHistory[this.inputHistoryIndex];
+          this.autoResizeInput();
+          this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
+        }
       }
     });
 
@@ -1417,19 +1563,33 @@ var ClawdianView = class extends import_obsidian.ItemView {
     });
 
     // Image attach button
-    const imgBtn = toolbarLeft.createEl("button", {
+    const attachBtn = toolbarLeft.createEl("button", {
       cls: "oc-toolbar-btn",
-      attr: { "aria-label": "Attach image" }
+      attr: { "aria-label": "Attach file" }
     });
-    setIconSafe(imgBtn, "image");
-    imgBtn.addEventListener("click", () => {
+    setIconSafe(attachBtn, "paperclip");
+    attachBtn.addEventListener("click", () => {
       const fileInput = document.createElement("input");
       fileInput.type = "file";
-      fileInput.accept = "image/*";
+      fileInput.accept = "image/*,text/*,.md,.txt,.csv,.json,.pdf";
       fileInput.multiple = true;
       fileInput.addEventListener("change", () => {
-        if (fileInput.files) {
-          for (const f of fileInput.files) this.addPastedImage(f);
+        if (!fileInput.files) return;
+        for (const f of fileInput.files) {
+          if (f.type.startsWith("image/")) {
+            // Images → base64 preview (existing path)
+            this.addPastedImage(f);
+          } else {
+            // Text/other files → read content and append to context
+            const reader = new FileReader();
+            reader.onload = () => {
+              const content = reader.result;
+              if (!this.attachedTextFiles) this.attachedTextFiles = [];
+              this.attachedTextFiles.push({ name: f.name, content });
+              this.updateContextRow();
+            };
+            reader.readAsText(f);
+          }
         }
       });
       fileInput.click();
@@ -1437,38 +1597,35 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     const toolbarRight = toolbar.createDiv({ cls: "oc-toolbar-right" });
 
-    // Model selector dropdown
+    toolbarRight.createDiv({ cls: "oc-send-hint", text: "Enter \u2192 send \u00B7 @ files \u00B7 / cmds" });
+
+    // Model selector dropdown — from settings only (no auto-fetch, /v1/models returns agents not LLMs)
     const modelSelect = toolbarRight.createEl("select", { cls: "oc-model-select" });
-    const models = [
-      { value: "", label: "Default (Obsidian) \u2728" },
-      { value: "bailian/qwen3.5-plus", label: "Qwen3.5+" },
-      { value: "bailian/kimi-k2.5", label: "Kimi K2.5" },
-      { value: "zenmux-anthropic/anthropic/claude-opus-4.6", label: "Opus 4.6" },
-      { value: "zenmux-anthropic/anthropic/claude-sonnet-4.6", label: "Sonnet 4.6" },
-      { value: "local/qwen3.5:27b", label: "Local 27B" },
-      { value: "bailian/qwen3-max-2026-01-23", label: "Qwen3 Max" },
-      { value: "bailian/glm-5", label: "GLM-5" },
-      { value: "bailian/MiniMax-M2.5", label: "MiniMax" },
-      { value: "openai-codex/gpt-5.4", label: "GPT-5.4" }
-    ];
-    for (const m of models) {
-      const opt = modelSelect.createEl("option", { text: m.label, attr: { value: m.value } });
-      if (m.value === this.plugin.settings.selectedModel) opt.selected = true;
-    }
     this.modelSelectEl = modelSelect;
+    const defaultOpt = modelSelect.createEl("option", { text: "Default \u2728", attr: { value: "" } });
+    defaultOpt.selected = true;
+    for (const m of (this.plugin.settings.customModels || [])) {
+      if (m.value && m.label) {
+        modelSelect.createEl("option", { text: m.label, attr: { value: m.value } });
+      }
+    }
     modelSelect.addEventListener("change", async () => {
       const selectedValue = modelSelect.value;
       const selectedLabel = modelSelect.options[modelSelect.selectedIndex].text;
       if (!this.isStreaming) {
         this.inputEl.value = selectedValue ? `/model ${selectedValue}` : `/model default`;
         await this.sendMessage();
-        // Persist selected model so it survives restart
-        this.plugin.settings.selectedModel = selectedValue;
-        await this.plugin.saveSettings();
+        // Persist model per-conversation
+        const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
+        if (conv) {
+          conv.model = selectedValue;
+          this.plugin.conversationStore.saveConversation(this.activeConvId);
+        }
         new import_obsidian.Notice(`Switching to ${selectedLabel}...`);
       } else {
         new import_obsidian.Notice("Wait for response to finish");
-        modelSelect.value = this.plugin.settings.selectedModel || "";
+        const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
+        modelSelect.value = conv?.model || "";
       }
     });
 
@@ -1482,8 +1639,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.stopBtn.addEventListener("click", () => {
       if (this.abortController) this.abortController.abort();
     });
-
-    toolbarRight.createDiv({ cls: "oc-send-hint", text: "Enter \u2192 send \u00B7 @ files \u00B7 / cmds" });
 
     // ---- Initialize ----
     await this.plugin.conversationStore.loadAll();
@@ -1518,26 +1673,18 @@ var ClawdianView = class extends import_obsidian.ItemView {
     }
   }
 
-  // ---- Selection Auto-Detection (Phase 1) ----
+  // ---- Selection Controller (Claudian-style) ----
 
   startSelectionDetection() {
-    this.selectionCheckInterval = setInterval(() => {
-      // When focus is inside the chat panel, freeze selection to preserve the chip
-      const activeEl = document.activeElement;
-      if (activeEl && this.containerEl && this.containerEl.contains(activeEl)) {
-        return; // User is interacting with chat — keep last selection
+    // Grace period: clicking chat panel gives 1.5s before clearing selection
+    this._pointerDownHandler = () => {
+      if (this.storedSelection) {
+        this.inputHandoffGraceUntil = Date.now() + 1500;
       }
-      const editor = this.getActiveEditor();
-      if (!editor) {
-        if (this.lastSelection) { this.lastSelection = ""; this.updateContextRow(); }
-        return;
-      }
-      const sel = editor.getSelection() || "";
-      if (sel !== this.lastSelection) {
-        this.lastSelection = sel;
-        this.updateContextRow();
-      }
-    }, 250);
+    };
+    this.containerEl.addEventListener("pointerdown", this._pointerDownHandler);
+
+    this.selectionCheckInterval = setInterval(() => this._pollSelection(), 250);
   }
 
   stopSelectionDetection() {
@@ -1545,6 +1692,102 @@ var ClawdianView = class extends import_obsidian.ItemView {
       clearInterval(this.selectionCheckInterval);
       this.selectionCheckInterval = null;
     }
+    if (this._pointerDownHandler) {
+      this.containerEl.removeEventListener("pointerdown", this._pointerDownHandler);
+    }
+    this._clearSelectionHighlight();
+    this.storedSelection = null;
+  }
+
+  _pollSelection() {
+    const view = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+    if (!view || !view.editor) {
+      this._handleDeselection();
+      return;
+    }
+    const editor = view.editor;
+    // Get CM6 EditorView
+    let editorView = null;
+    try { editorView = editor.cm; } catch (e) {}
+
+    const selectedText = editor.getSelection();
+    if (selectedText && selectedText.trim()) {
+      this.inputHandoffGraceUntil = null;
+      const fromPos = editor.getCursor("from");
+      const toPos = editor.getCursor("to");
+      const from = editor.posToOffset(fromPos);
+      const to = editor.posToOffset(toPos);
+      const startLine = fromPos.line + 1;
+      const notePath = (view.file && view.file.path) || "unknown";
+      const lineCount = selectedText.split(/\r?\n/).length;
+
+      const s = this.storedSelection;
+      const sameRange = s && s.editorView === editorView && s.from === from && s.to === to && s.notePath === notePath;
+      const unchanged = sameRange && s.selectedText === selectedText;
+      if (!unchanged) {
+        if (s && !sameRange) this._clearSelectionHighlight();
+        this.storedSelection = { notePath, selectedText, lineCount, startLine, from, to, editorView };
+        this.updateContextRow();
+      }
+    } else {
+      this._handleDeselection();
+    }
+  }
+
+  _isFocusInChatPanel() {
+    const activeEl = document.activeElement;
+    return activeEl && this.containerEl && this.containerEl.contains(activeEl);
+  }
+
+  _handleDeselection() {
+    if (!this.storedSelection) return;
+    // Don't clear if focus is in chat panel
+    if (this._isFocusInChatPanel()) {
+      this.inputHandoffGraceUntil = null;
+      return;
+    }
+    // Don't clear during grace period
+    if (this.inputHandoffGraceUntil && Date.now() <= this.inputHandoffGraceUntil) {
+      return;
+    }
+    this.inputHandoffGraceUntil = null;
+    this._clearSelectionHighlight();
+    this.storedSelection = null;
+    this.updateContextRow();
+  }
+
+  // CM6 decoration-based highlight (persists after focus change)
+  _showSelectionHighlight() {
+    const sel = this.storedSelection;
+    if (!sel || !sel.editorView || sel.from === undefined || sel.to === undefined) return;
+    try {
+      sel.editorView.dispatch({ effects: selectionHighlightShowEffect.of({ from: sel.from, to: sel.to }) });
+    } catch (e) {}
+  }
+
+  _clearSelectionHighlight() {
+    const sel = this.storedSelection;
+    if (!sel || !sel.editorView) return;
+    try {
+      sel.editorView.dispatch({ effects: selectionHighlightHideEffect.of(null) });
+    } catch (e) {}
+  }
+
+  _getSelectionContext() {
+    if (!this.storedSelection) return null;
+    return {
+      notePath: this.storedSelection.notePath,
+      selectedText: this.storedSelection.selectedText,
+      lineCount: this.storedSelection.lineCount,
+      startLine: this.storedSelection.startLine
+    };
+  }
+
+  _clearSelection() {
+    this._clearSelectionHighlight();
+    this.inputHandoffGraceUntil = null;
+    this.storedSelection = null;
+    this.updateContextRow();
   }
 
   getActiveEditor() {
@@ -1742,6 +1985,14 @@ var ClawdianView = class extends import_obsidian.ItemView {
     if (!this.openTabs.includes(convId)) this.openTabs = [...this.openTabs, convId];
     this.renderTabs();
     this.renderMessages();
+    // Restore per-conversation model in dropdown
+    if (this.modelSelectEl) {
+      const conv = this.plugin.conversationStore.getConversation(convId);
+      this.modelSelectEl.value = conv?.model || "";
+    }
+    // Persist tab state immediately so restart recovers correctly
+    this.plugin.settings._tabState = { tabs: this.openTabs, activeId: this.activeConvId };
+    this.plugin.saveSettings();
   }
 
   // ---- Message Rendering ----
@@ -1751,7 +2002,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
     const conv = this.plugin.conversationStore.getConversation(this.activeConvId);
     if (!conv || conv.messages.length === 0) {
       const welcome = this.messagesEl.createDiv({ cls: "oc-welcome" });
-      welcome.createDiv({ cls: "oc-welcome-greeting", text: "\uD83E\uDD9E Hey, Zorba" });
+      welcome.createDiv({ cls: "oc-welcome-greeting", text: "\uD83E\uDD9E Hey there" });
       welcome.createDiv({ cls: "oc-welcome-hint", text: "Enter to send \u00B7 @ to attach files \u00B7 / for commands \u00B7 paste images" });
       return;
     }
@@ -1769,6 +2020,9 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
     const msgEl = this.messagesEl.createDiv({ cls: `oc-message oc-message-${role}` });
 
+    // User messages: body wrapper for Gemini-style flex layout (content left, actions right)
+    const msgBodyEl = role === "user" ? msgEl.createDiv({ cls: "oc-message-body" }) : msgEl;
+
     // Role label (assistant only — user messages are visually distinct via alignment + background)
     if (role === "assistant") {
       msgEl.createDiv({ cls: "oc-role-label", text: "\uD83E\uDD9E Clawdian" });
@@ -1778,7 +2032,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       if (conv && typeof msgIndex === "number") {
         const msg = conv.messages[msgIndex];
         if (msg && msg.images && msg.images.length > 0) {
-          const imagesEl = msgEl.createDiv({ cls: "oc-message-images" });
+          const imagesEl = msgBodyEl.createDiv({ cls: "oc-message-images" });
           for (const imgData of msg.images) {
             const imgWrap = imagesEl.createDiv({ cls: "oc-message-image" });
             imgWrap.createEl("img", { attr: { src: imgData } });
@@ -1808,7 +2062,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       });
     }
 
-    const contentEl = msgEl.createDiv({ cls: "oc-message-content" });
+    const contentEl = msgBodyEl.createDiv({ cls: "oc-message-content" });
 
     if (role === "assistant") {
       import_obsidian.MarkdownRenderer.render(this.app, content, contentEl, "", this.plugin);
@@ -1824,15 +2078,44 @@ var ClawdianView = class extends import_obsidian.ItemView {
       const actionsEl = msgEl.createDiv({ cls: "oc-message-actions" });
 
       if (role === "user" && typeof msgIndex === "number") {
-        // Edit & resend
+        // Edit & resend — inline editing
         const editBtn = actionsEl.createEl("button", { cls: "oc-action-btn", attr: { "aria-label": "Edit & resend" } });
         setIconSafe(editBtn, "pencil");
         editBtn.addEventListener("click", () => {
-          this.plugin.conversationStore.truncateFrom(this.activeConvId, msgIndex);
-          this.inputEl.value = content;
-          this.autoResizeInput();
-          this.renderMessages();
-          this.inputEl.focus();
+          if (this.isStreaming) return;
+          // Replace message content with inline textarea
+          const contentEl = msgEl.querySelector(".oc-message-content");
+          if (!contentEl || msgEl.querySelector(".oc-inline-edit-textarea")) return;
+
+          const originalHTML = contentEl.innerHTML;
+          contentEl.empty();
+
+          const textarea = contentEl.createEl("textarea", { cls: "oc-inline-edit-textarea" });
+          textarea.value = content;
+          textarea.rows = Math.min(content.split("\n").length + 1, 10);
+          setTimeout(() => { textarea.focus(); textarea.selectionStart = textarea.selectionEnd = textarea.value.length; }, 0);
+
+          const btnRow = msgEl.createDiv({ cls: "oc-inline-edit-btnrow" });
+          const cancelBtn = btnRow.createEl("button", { cls: "oc-inline-edit-cancel-btn", text: "Cancel" });
+          const confirmBtn = btnRow.createEl("button", { cls: "oc-inline-edit-confirm", text: "Send" });
+
+          confirmBtn.addEventListener("click", () => {
+            const newContent = textarea.value.trim();
+            if (!newContent) return;
+            this.plugin.conversationStore.truncateFrom(this.activeConvId, msgIndex);
+            this.renderMessages();
+            this._doSend(newContent, false);
+          });
+
+          cancelBtn.addEventListener("click", () => {
+            contentEl.innerHTML = originalHTML;
+            btnRow.remove();
+          });
+
+          textarea.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); confirmBtn.click(); }
+            if (e.key === "Escape") { cancelBtn.click(); }
+          });
         });
       }
 
@@ -1857,23 +2140,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
         setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
       });
     }
-
-    // Navigation arrows — right edge, Claudian style
-    const navEl = msgEl.createDiv({ cls: "oc-message-nav" });
-    const upBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll to previous message" } });
-    setIconSafe(upBtn, "chevron-up");
-    upBtn.addEventListener("click", () => {
-      const prev = msgEl.previousElementSibling;
-      if (prev) prev.scrollIntoView({ behavior: "smooth", block: "start" });
-      else this.messagesEl.scrollTop = 0;
-    });
-    const downBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll to next message" } });
-    setIconSafe(downBtn, "chevron-down");
-    downBtn.addEventListener("click", () => {
-      const next = msgEl.nextElementSibling;
-      if (next) next.scrollIntoView({ behavior: "smooth", block: "start" });
-      else this.scrollToBottom();
-    });
 
     if (this.autoScrollEnabled) this.scrollToBottom();
     return msgEl;
@@ -1911,8 +2177,12 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
   updateStreamingMessage(fullText) {
     if (!this.streamingContentEl) return;
-    this.streamingContentEl.empty();
-    import_obsidian.MarkdownRenderer.render(this.app, fullText, this.streamingContentEl, "", this.plugin);
+    if (this.plugin.settings.streamMarkdown) {
+      this.streamingContentEl.empty();
+      import_obsidian.MarkdownRenderer.render(this.app, fullText, this.streamingContentEl, "", this.plugin);
+    } else {
+      this.streamingContentEl.textContent = fullText;
+    }
     if (this.autoScrollEnabled) this.scrollToBottom();
   }
 
@@ -1968,20 +2238,6 @@ var ClawdianView = class extends import_obsidian.ItemView {
       setTimeout(() => { setIconSafe(copyBtn, "copy"); copyBtn.removeClass("copied"); }, 1500);
     });
 
-    // Navigation arrows
-    const streamEl = this.streamingEl;
-    const navEl = streamEl.createDiv({ cls: "oc-message-nav" });
-    const upBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll up" } });
-    setIconSafe(upBtn, "chevron-up");
-    upBtn.addEventListener("click", () => {
-      const prev = streamEl.previousElementSibling;
-      if (prev) prev.scrollIntoView({ behavior: "smooth", block: "start" });
-      else this.messagesEl.scrollTop = 0;
-    });
-    const downBtn = navEl.createEl("button", { cls: "oc-nav-btn", attr: { "aria-label": "Scroll down" } });
-    setIconSafe(downBtn, "chevron-down");
-    downBtn.addEventListener("click", () => this.scrollToBottom());
-
     this.streamingEl = null;
     this.streamingContentEl = null;
     this.thinkingEl = null;
@@ -2002,12 +2258,53 @@ var ClawdianView = class extends import_obsidian.ItemView {
   async sendMessage() {
     const content = this.inputEl.value.trim();
     if (!content || this.isStreaming) return;
+    // Save to input history (newest first, max 50)
+    if (this.inputHistory[0] !== content) {
+      this.inputHistory.unshift(content);
+      if (this.inputHistory.length > 50) this.inputHistory.pop();
+    }
+    this.inputHistoryIndex = -1;
+    this.inputDraft = "";
     this.inputEl.value = "";
     this.autoResizeInput();
     await this._doSend(content, false);
   }
 
+  async _compact() {
+    const convId = this.activeConvId;
+    const conv = this.plugin.conversationStore.getConversation(convId);
+    if (!conv || conv.messages.length < 2) {
+      new import_obsidian.Notice("没有足够的对话内容可以压缩");
+      return;
+    }
+    new import_obsidian.Notice("正在压缩对话历史...");
+    try {
+      const history = conv.messages.map(m => `${m.role === "user" ? "用户" : "AI"}：${m.content}`).join("\n\n");
+      const summary = await this.plugin.api.chatSync(
+        `请用简洁的方式总结以下对话，保留所有关键信息、决策和结论，去掉寒暄和重复内容：\n\n${history}`,
+        "你是对话压缩器。直接输出总结内容，不加任何前缀或解释。"
+      );
+      // Replace all messages with a single summary message
+      conv.messages = [
+        { role: "user", content: "[对话已压缩]", timestamp: Date.now() },
+        { role: "assistant", content: `**对话摘要**\n\n${summary}`, timestamp: Date.now() }
+      ];
+      conv.updatedAt = Date.now();
+      await this.plugin.conversationStore.saveConversation(convId);
+      this.renderMessages();
+      new import_obsidian.Notice("✓ 对话已压缩");
+    } catch (err) {
+      new import_obsidian.Notice("压缩失败：" + (err.message || err));
+    }
+  }
+
   async _doSend(content, isResend) {
+    // Handle /compact before streaming starts
+    if (content.trim() === "/compact") {
+      await this._compact();
+      return;
+    }
+
     this.isStreaming = true;
     this.autoScrollEnabled = true;
     this.stopBtn.style.display = "";
@@ -2028,29 +2325,11 @@ var ClawdianView = class extends import_obsidian.ItemView {
         try {
           const fileContent = await this.app.vault.read(file);
           if (fileContent.length > LARGE_FILE_THRESHOLD) {
-            // Large file: auto-search with vault_search.py (Direction B)
+            // Large file: give model path + size, let it use rg to search
             const fullPath = vaultPath ? vaultPath + '\\' + file.path.replace(/\//g, '\\') : file.path;
             const charCount = fileContent.length;
             const lineCount = fileContent.split('\n').length;
-            let searchResult = '';
-            try {
-              const { execFileSync } = require('child_process');
-              const result = execFileSync('python', [
-                'E:\\openclaw-work\\clawdian\\vault_search.py',
-                '--query', content,
-                '--path', fullPath,
-                '--context', '15',
-                '--max-chars', '15000'
-              ], { encoding: 'utf-8', timeout: 30000 });
-              searchResult = result.trim();
-            } catch (e) {
-              searchResult = '[vault_search 执行失败: ' + (e.message || '').slice(0, 200) + ']';
-            }
-            if (searchResult && !searchResult.startsWith('[vault_search 执行失败')) {
-              contextParts.push(`[大文件附件: ${file.path}]（${charCount} 字符，${lineCount} 行）\n以下是根据用户问题自动搜索到的相关段落：\n\n${searchResult}`);
-            } else {
-              contextParts.push(`[大文件附件: ${file.path}]（${charCount} 字符，${lineCount} 行）\n${searchResult}\n⚠️ 自动搜索未找到结果或失败。如需手动搜索，请用 exec 执行：\npython E:\\openclaw-work\\clawdian\\vault_search.py --query "关键词" --path "${fullPath}"`);
-            }
+            contextParts.push(`[Large file: ${file.path}] (${charCount} chars, ${lineCount} lines)\nFull path: ${fullPath}\nUse rg (ripgrep) to search this file for relevant content. Do NOT try to read the entire file.`);
           } else {
             // Normal file: inline content
             contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent}\n\`\`\``);
@@ -2058,6 +2337,14 @@ var ClawdianView = class extends import_obsidian.ItemView {
         } catch (e) {}
       }
       this.attachedFiles = [];
+    }
+
+    // Non-vault text files attached via button
+    if (this.attachedTextFiles && this.attachedTextFiles.length > 0) {
+      for (const tf of this.attachedTextFiles) {
+        contextParts.push(`[Attached file: ${tf.name}]\n\`\`\`\n${tf.content}\n\`\`\``);
+      }
+      this.attachedTextFiles = [];
     }
 
     // Current note — same large file threshold as attachments
@@ -2072,25 +2359,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
               if (noteContent.length > LARGE_FILE_THRESHOLD) {
                 const cvaultPath = getVaultBasePath(this.app);
                 const fullPath = cvaultPath ? cvaultPath + '\\' + activeFile.path.replace(/\//g, '\\') : activeFile.path;
-                let searchResult = '';
-                try {
-                  const { execFileSync } = require('child_process');
-                  const result = execFileSync('python', [
-                    'E:\\openclaw-work\\clawdian\\vault_search.py',
-                    '--query', content,
-                    '--path', fullPath,
-                    '--context', '15',
-                    '--max-chars', '15000'
-                  ], { encoding: 'utf-8', timeout: 30000 });
-                  searchResult = result.trim();
-                } catch (e) {
-                  searchResult = '[vault_search 执行失败: ' + (e.message || '').slice(0, 200) + ']';
-                }
-                if (searchResult && !searchResult.startsWith('[vault_search 执行失败')) {
-                  contextParts.push(`[当前查看: ${activeFile.path}]（${noteContent.length} 字符，大文件）\n以下是根据用户问题自动搜索到的相关段落：\n\n${searchResult}`);
-                } else {
-                  contextParts.push(`[当前查看: ${activeFile.path}]（${noteContent.length} 字符，大文件）\n${searchResult}`);
-                }
+                contextParts.push(`[Current note: ${activeFile.path}] (${noteContent.length} chars, large file)\nFull path: ${fullPath}\nUse rg (ripgrep) to search this file for relevant content. Do NOT try to read the entire file.`);
               } else {
                 contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent}\n\`\`\``);
               }
@@ -2100,9 +2369,13 @@ var ClawdianView = class extends import_obsidian.ItemView {
       }
     }
 
-    // Selection context (Phase 1, item 4)
-    if (this.lastSelection && this.lastSelection.trim()) {
-      contextParts.push(`[Selected text in editor]\n\`\`\`\n${this.lastSelection.slice(0, 4000)}\n\`\`\``);
+    // Selection context (Claudian-style XML) — capture before clearing
+    const selCtx = this._getSelectionContext();
+    if (selCtx) {
+      const lineAttr = selCtx.startLine && selCtx.lineCount
+        ? ` lines="${selCtx.startLine}-${selCtx.startLine + selCtx.lineCount - 1}"`
+        : "";
+      contextParts.push(`<editor_selection path="${selCtx.notePath}"${lineAttr}>\n${selCtx.selectedText}\n</editor_selection>`);
     }
 
     if (contextParts.length > 0) userContent += "\n\n" + contextParts.join("\n\n");
@@ -2125,11 +2398,16 @@ var ClawdianView = class extends import_obsidian.ItemView {
     }
     this.pastedImages = [];
 
-    // Add to store & render
+    // Add to store & render (display only user's typed text, selection context is API-only)
     if (!isResend) {
       this.plugin.conversationStore.addMessage(convId, "user", content, messageImages.length > 0 ? { images: messageImages } : undefined);
       const conv = this.plugin.conversationStore.getConversation(convId);
       this.appendMessageEl("user", content, conv ? conv.messages.length - 1 : undefined);
+    }
+
+    // Clear selection after send
+    if (selCtx) {
+      this._clearSelection();
     }
 
     this.startStreamingMessage();
@@ -2140,7 +2418,7 @@ var ClawdianView = class extends import_obsidian.ItemView {
       const history = this.plugin.conversationStore.getMessages(convId);
 
       // Build API messages with system prompt (Phase 1, item 1)
-      const systemPrompt = buildSystemPrompt(this.app);
+      const systemPrompt = buildSystemPrompt(this.app, this.plugin.settings);
       const apiMessages = [
         { role: "system", content: systemPrompt },
         ...history.map((m, i) => {
@@ -2172,8 +2450,9 @@ var ClawdianView = class extends import_obsidian.ItemView {
 
       // AI title generation (Phase 2, item 7)
       const conv = this.plugin.conversationStore.getConversation(convId);
-      if (conv && conv.messages.length === 2 && conv.title.startsWith(content.slice(0, 10))) {
+      if (conv && conv.messages.length === 2 && conv._autoTitled) {
         // First exchange — generate a short title
+        conv._autoTitled = false;
         this.generateTitle(convId, content);
       }
 
@@ -2235,6 +2514,18 @@ var ClawdianView = class extends import_obsidian.ItemView {
     this.contextRowEl.empty();
     let hasContent = false;
 
+    // Show attached text files (non-vault)
+    for (const tf of (this.attachedTextFiles || [])) {
+      hasContent = true;
+      const chip = this.contextRowEl.createDiv({ cls: "oc-context-chip" });
+      chip.createSpan({ text: `📎 ${tf.name}` });
+      const removeBtn = chip.createSpan({ cls: "oc-chip-remove", text: "\u00D7" });
+      removeBtn.addEventListener("click", () => {
+        this.attachedTextFiles = this.attachedTextFiles.filter(f => f.name !== tf.name);
+        this.updateContextRow();
+      });
+    }
+
     // Show attached files
     for (const file of this.attachedFiles) {
       hasContent = true;
@@ -2278,14 +2569,16 @@ var ClawdianView = class extends import_obsidian.ItemView {
       }
     }
 
-    // Show selection indicator (Phase 1, item 4)
-    if (this.lastSelection && this.lastSelection.trim()) {
+    // Show selection indicator (Claudian-style: "N lines selected")
+    if (this.storedSelection && this.storedSelection.selectedText.trim()) {
       hasContent = true;
       const chip = this.contextRowEl.createDiv({ cls: "oc-context-chip oc-selection-indicator" });
-      const preview = this.lastSelection.trim().slice(0, 30) + (this.lastSelection.length > 30 ? "..." : "");
       const selIcon = chip.createSpan({ cls: "oc-context-chip-icon" });
       setIconSafe(selIcon, "type", "12");
-      chip.createSpan({ text: ` ${preview}` });
+      const n = this.storedSelection.lineCount || 1;
+      chip.createSpan({ text: ` ${n} line${n > 1 ? "s" : ""} selected` });
+      // Maintain CM6 highlight
+      this._showSelectionHighlight();
     }
 
     this.contextRowEl.toggleClass("has-content", hasContent);
@@ -2330,11 +2623,113 @@ var ClawdianSettingTab = class extends import_obsidian.PluginSettingTab {
       });
     }
 
+    containerEl.createEl("h3", { text: "Model & API" });
+
+    new import_obsidian.Setting(containerEl).setName("Default model").setDesc("Model name sent with each request (e.g. openclaw/obsidian, gpt-4o, claude-sonnet-4)")
+      .addText(t => t.setPlaceholder("openclaw/obsidian").setValue(this.plugin.settings.defaultModel)
+        .onChange(async v => { this.plugin.settings.defaultModel = v || "openclaw/obsidian"; await this.plugin.saveSettings(); }));
+
+    new import_obsidian.Setting(containerEl).setName("Scopes header").setDesc("Value for x-openclaw-scopes header. Leave empty if not using OpenClaw.")
+      .addText(t => t.setPlaceholder("operator.admin,operator.read,operator.write").setValue(this.plugin.settings.scopes)
+        .onChange(async v => { this.plugin.settings.scopes = v; await this.plugin.saveSettings(); }));
+
+    new import_obsidian.Setting(containerEl).setName("Custom models").setDesc("Additional models for the dropdown selector, one per line: value|label (e.g. gpt-4o|GPT-4o)")
+      .addTextArea(t => {
+        const val = (this.plugin.settings.customModels || []).map(m => `${m.value}|${m.label}`).join('\n');
+        t.setPlaceholder("gpt-4o|GPT-4o\nclaude-sonnet-4|Sonnet 4").setValue(val)
+          .onChange(async v => {
+            this.plugin.settings.customModels = v.split('\n').filter(l => l.includes('|')).map(l => {
+              const [value, ...rest] = l.split('|');
+              return { value: value.trim(), label: rest.join('|').trim() };
+            });
+            await this.plugin.saveSettings();
+          });
+        t.inputEl.rows = 4;
+      });
+
+    containerEl.createEl("h3", { text: "Behavior" });
+
     new import_obsidian.Setting(containerEl).setName("Include current note").setDesc("Attach focused note as context")
       .addToggle(t => t.setValue(this.plugin.settings.includeCurrentNote).onChange(async v => { this.plugin.settings.includeCurrentNote = v; await this.plugin.saveSettings(); }));
 
+    // ---- Custom Commands ----
+    containerEl.createEl("h3", { text: "Custom Commands" });
+    containerEl.createEl("p", { text: "自定义提示词，可出现在 / 斜杠命令或右键菜单。提示词中用 {{text}} 代表选中文本。", cls: "setting-item-description" });
+
+    const renderCustomCommands = () => {
+      listEl.empty();
+      const cmds = this.plugin.settings.customCommands || [];
+      cmds.forEach((cmd, idx) => {
+        const row = listEl.createDiv({ cls: "oc-custom-cmd-row" });
+
+        const nameInput = row.createEl("input", { type: "text", cls: "oc-custom-cmd-name" });
+        nameInput.placeholder = "命令名";
+        nameInput.value = cmd.name;
+        nameInput.addEventListener("change", async () => {
+          cmds[idx].name = nameInput.value.trim();
+          await this.plugin.saveSettings();
+        });
+
+        const promptInput = row.createEl("textarea", { cls: "oc-custom-cmd-prompt" });
+        promptInput.placeholder = "提示词，支持 {{text}} 占位符";
+        promptInput.value = cmd.prompt;
+        promptInput.rows = 2;
+        promptInput.addEventListener("change", async () => {
+          cmds[idx].prompt = promptInput.value;
+          await this.plugin.saveSettings();
+        });
+
+        const toggles = row.createDiv({ cls: "oc-custom-cmd-toggles" });
+
+        const slashLabel = toggles.createEl("label", { cls: "oc-custom-cmd-toggle" });
+        const slashCb = slashLabel.createEl("input", { type: "checkbox" });
+        slashCb.checked = !!cmd.inSlash;
+        slashLabel.createSpan({ text: "/ slash" });
+        slashCb.addEventListener("change", async () => {
+          cmds[idx].inSlash = slashCb.checked;
+          await this.plugin.saveSettings();
+        });
+
+        const menuLabel = toggles.createEl("label", { cls: "oc-custom-cmd-toggle" });
+        const menuCb = menuLabel.createEl("input", { type: "checkbox" });
+        menuCb.checked = !!cmd.inMenu;
+        menuLabel.createSpan({ text: "右键菜单" });
+        menuCb.addEventListener("change", async () => {
+          cmds[idx].inMenu = menuCb.checked;
+          await this.plugin.saveSettings();
+        });
+
+        const delBtn = row.createEl("button", { cls: "oc-custom-cmd-del", text: "×" });
+        delBtn.addEventListener("click", async () => {
+          this.plugin.settings.customCommands.splice(idx, 1);
+          await this.plugin.saveSettings();
+          renderCustomCommands();
+        });
+      });
+
+      const addBtn = listEl.createEl("button", { cls: "oc-custom-cmd-add", text: "+ 添加命令" });
+      addBtn.addEventListener("click", async () => {
+        if (!this.plugin.settings.customCommands) this.plugin.settings.customCommands = [];
+        this.plugin.settings.customCommands.push({ name: "", prompt: "", inSlash: false, inMenu: true });
+        await this.plugin.saveSettings();
+        renderCustomCommands();
+      });
+    };
+
+    const listEl = containerEl.createDiv({ cls: "oc-custom-cmd-list" });
+    renderCustomCommands();
+
+    new import_obsidian.Setting(containerEl).setName("Markdown during streaming").setDesc("开启：流式输出时实时渲染格式（好看但长回复会卡）。关闭：流式阶段纯文本，结束后一次渲染（丝滑）。")
+      .addToggle(t => t.setValue(this.plugin.settings.streamMarkdown).onChange(async v => { this.plugin.settings.streamMarkdown = v; await this.plugin.saveSettings(); }));
+
     new import_obsidian.Setting(containerEl).setName("Show file actions").setDesc("Display file action indicators")
       .addToggle(t => t.setValue(this.plugin.settings.showActionsInChat).onChange(async v => { this.plugin.settings.showActionsInChat = v; await this.plugin.saveSettings(); }));
+
+    containerEl.createEl("h3", { text: "Advanced" });
+
+    new import_obsidian.Setting(containerEl).setName("Vault search script").setDesc("Path to vault_search.py for large file search (optional)")
+      .addText(t => t.setPlaceholder("Leave empty to disable").setValue(this.plugin.settings.vaultSearchPath)
+        .onChange(async v => { this.plugin.settings.vaultSearchPath = v; await this.plugin.saveSettings(); }));
 
     containerEl.createEl("h3", { text: "Audit Log" });
     new import_obsidian.Setting(containerEl).setName("Enable audit logging")
@@ -2481,38 +2876,43 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
       this.app.workspace.on("editor-menu", (menu, editor) => {
         const selection = editor.getSelection();
         if (selection) {
-          menu.addItem(item => {
-            item.setTitle("Send to Clawdian")
-              .setIcon("clawdian-lobster")
-              .onClick(async () => {
-                await this.activateView();
-                const leaves = this.app.workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
-                if (leaves.length > 0) {
-                  const view = leaves[0].view;
-                  if (view instanceof ClawdianView) {
-                    view.inputEl.value = selection;
-                    view.autoResizeInput();
-                    view.inputEl.focus();
+          // Custom commands with inMenu: true
+          const menuCmds = (this.settings.customCommands || []).filter(c => c.inMenu);
+          for (const cmd of menuCmds) {
+            menu.addItem(item => {
+              item.setTitle(cmd.name)
+                .setIcon("clawdian-lobster")
+                .onClick(async () => {
+                  await this.activateView();
+                  const leaves = this.app.workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
+                  if (leaves.length > 0) {
+                    const view = leaves[0].view;
+                    if (view instanceof ClawdianView) {
+                      if (!view.storedSelection) {
+                        const activeView = this.app.workspace.getActiveViewOfType(import_obsidian.MarkdownView);
+                        if (activeView && activeView.editor) {
+                          const ed = activeView.editor;
+                          const fromPos = ed.getCursor("from");
+                          view.storedSelection = {
+                            notePath: activeView.file?.path || "",
+                            selectedText: selection,
+                            lineCount: selection.split(/\r?\n/).length,
+                            startLine: fromPos.line + 1,
+                            from: ed.posToOffset(fromPos),
+                            to: ed.posToOffset(ed.getCursor("to")),
+                            editorView: ed.cm
+                          };
+                          view.updateContextRow();
+                        }
+                      }
+                      view.inputEl.value = cmd.prompt.replace(/\{\{text\}\}/g, selection);
+                      view.autoResizeInput();
+                      view.inputEl.focus();
+                    }
                   }
-                }
-              });
-          });
-          menu.addItem(item => {
-            item.setTitle("Ask Clawdian to explain")
-              .setIcon("clawdian-lobster")
-              .onClick(async () => {
-                await this.activateView();
-                const leaves = this.app.workspace.getLeavesOfType(CLAWDIAN_VIEW_TYPE);
-                if (leaves.length > 0) {
-                  const view = leaves[0].view;
-                  if (view instanceof ClawdianView) {
-                    view.inputEl.value = `Explain this:\n\n${selection}`;
-                    view.autoResizeInput();
-                    view.inputEl.focus();
-                  }
-                }
-              });
-          });
+                });
+            });
+          }
           // Inline edit in context menu
           menu.addItem(item => {
             item.setTitle("Inline Edit with Clawdian")
@@ -2544,6 +2944,16 @@ var ClawdianPlugin = class extends import_obsidian.Plugin {
       delete data.gatewayToken;
     }
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Migrate legacy explainPrompt to customCommands
+    if (this.settings.explainPrompt && (!this.settings.customCommands || this.settings.customCommands.length === 0)) {
+      this.settings.customCommands = [{
+        name: "Explain",
+        prompt: this.settings.explainPrompt,
+        inSlash: false,
+        inMenu: true
+      }];
+    }
+    delete this.settings.explainPrompt;
   }
 
   async saveSettings() {

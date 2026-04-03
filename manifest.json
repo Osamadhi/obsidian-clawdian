@@ -1,1 +1,10 @@
-{"id":"clawdian","name":"Clawdian","version":"3.0.0","minAppVersion":"1.0.0","description":"Claw + Obsidian. AI collaborator with streaming chat, thinking display, @ file mentions, image paste, inline edit, slash commands, and full vault integration.","author":"Zorba & Maya","isDesktopOnly":true}
+{
+  "id": "clawdian",
+  "name": "Clawdian",
+  "version": "3.2.0",
+  "minAppVersion": "1.0.0",
+  "description": "AI chat assistant for Obsidian with streaming responses, thinking display, @ file mentions, inline edit, slash commands, and full vault integration. Works with any OpenAI-compatible API.",
+  "author": "Zorba",
+  "authorUrl": "https://github.com/nicekate",
+  "isDesktopOnly": true
+}

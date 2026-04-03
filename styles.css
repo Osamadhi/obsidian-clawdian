@@ -7,18 +7,18 @@
 .openclaw-container {
   --oc-brand: #D97757;
   --oc-brand-rgb: 217, 119, 87;
-  --oc-user-bg: rgba(0, 0, 0, 0.25);
-  --oc-user-bg-light: rgba(0, 0, 0, 0.08);
+  --oc-user-bg: rgba(0, 0, 0, 0.38);
+  --oc-user-bg-light: rgba(0, 0, 0, 0.12);
   --oc-radius: 8px;
   --oc-radius-sm: 4px;
-  --oc-gap: 12px;
-  --oc-pad: 14px;
+  --oc-gap: 8px;
+  --oc-pad: 12px;
 }
 
 /* Light theme adjustments */
 .theme-light .openclaw-container {
-  --oc-user-bg: rgba(0, 0, 0, 0.06);
-  --oc-user-bg-light: rgba(0, 0, 0, 0.04);
+  --oc-user-bg: rgba(0, 0, 0, 0.10);
+  --oc-user-bg-light: rgba(0, 0, 0, 0.06);
 }
 
 /* ============================================
@@ -55,10 +55,11 @@
 .oc-header {
   display: flex;
   align-items: center;
-  padding: 8px 12px;
-  gap: 8px;
+  padding: 6px 8px;
+  gap: 6px;
   border-bottom: 1px solid var(--background-modifier-border);
   flex-shrink: 0;
+  background: var(--background-primary);
 }
 
 .oc-header-title {
@@ -125,7 +126,7 @@
   display: none;
 }
 
-/* New Chat button */
+/* New Chat button — ghost style */
 .oc-tab-new {
   display: flex;
   align-items: center;
@@ -133,12 +134,13 @@
   width: 28px;
   height: 28px;
   border-radius: var(--oc-radius-sm);
-  border: 2px solid var(--background-modifier-border);
+  border: 1px solid var(--background-modifier-border);
+  outline: none;
   font-size: 16px;
   font-weight: 600;
   cursor: pointer;
   color: var(--text-muted);
-  background: var(--background-primary);
+  background: transparent;
   transition: all 0.15s ease;
   flex-shrink: 0;
 }
@@ -146,23 +148,22 @@
 .oc-tab-new:hover {
   background: var(--background-modifier-hover);
   color: var(--interactive-accent);
-  border-color: var(--interactive-accent);
 }
 
-/* Current conversation title */
+/* Current conversation title — borderless, clean */
 .oc-tab-title {
   display: flex;
   align-items: center;
   gap: 4px;
   height: 28px;
-  padding: 0 10px;
+  padding: 0 8px;
   border-radius: var(--oc-radius-sm);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   color: var(--text-normal);
-  background: var(--background-primary);
-  border: 2px solid var(--interactive-accent);
+  background: var(--background-secondary);
+  border: none;
   transition: all 0.15s ease;
   white-space: nowrap;
   overflow: hidden;
@@ -176,7 +177,7 @@
 }
 
 .oc-tab-title.streaming {
-  border-color: var(--oc-brand);
+  color: var(--oc-brand);
   animation: oc-pulse 1.5s ease-in-out infinite;
 }
 
@@ -196,8 +197,8 @@
   overflow-y: auto;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
-  border-radius: var(--oc-radius-md, 8px);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+  border-radius: var(--oc-radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
   z-index: 100;
   padding: 4px;
 }
@@ -216,8 +217,7 @@
 }
 
 .oc-conv-item.active {
-  background: var(--background-modifier-active-hover, rgba(var(--interactive-accent-rgb), 0.1));
-  border-left: 3px solid var(--interactive-accent);
+  background: var(--background-secondary);
 }
 
 .oc-conv-info {
@@ -287,16 +287,16 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   background: var(--background-secondary);
   border: 1px solid var(--background-modifier-border);
   color: var(--text-muted);
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
   z-index: 10;
-  transition: color 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .oc-scroll-btn.oc-scroll-top {
@@ -348,30 +348,68 @@
    Messages
    ============================================ */
 .oc-message {
-  padding: 10px var(--oc-pad);
+  padding: 8px var(--oc-pad);
   border-radius: var(--oc-radius);
   max-width: 100%;
   width: 100%;
   word-wrap: break-word;
-  animation: oc-fadein 0.2s ease;
+  animation: oc-fadein 0.15s ease;
   position: relative;
 }
 
 .oc-message-user {
-  background: rgba(0, 0, 0, 0.3);
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
   align-self: flex-end;
+  max-width: 85%;
+  width: fit-content;
+  margin-right: var(--oc-pad);
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.oc-message-user .oc-message-body {
+  order: 2;
+  flex: 1;
+  min-width: 0;
+  background: var(--oc-user-bg);
+  padding: 8px var(--oc-pad);
+  border-radius: var(--oc-radius);
   border-bottom-right-radius: var(--oc-radius-sm);
-  max-width: 95%;
+  word-wrap: break-word;
 }
 
-.theme-light .oc-message-user {
-  background: rgba(0, 0, 0, 0.06);
-}
-
-.oc-message-user::selection,
-.oc-message-user ::selection {
+.oc-message-user .oc-message-body::selection,
+.oc-message-user .oc-message-body ::selection {
   background: rgba(255, 255, 255, 0.3);
   color: inherit;
+}
+
+/* Actions: horizontal row [copy] [edit], to the LEFT of bubble */
+.oc-message-user .oc-message-actions {
+  order: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding-top: 6px;
+  flex-shrink: 0;
+}
+
+/* Copy leftmost, edit closest to bubble */
+.oc-message-user .oc-message-actions .oc-action-btn[aria-label="Copy"] { order: 1; }
+.oc-message-user .oc-message-actions .oc-action-btn[aria-label="Edit & resend"] { order: 2; }
+
+/* Send/Cancel row: wraps to next line, outside the bubble */
+.oc-message-user .oc-inline-edit-btnrow {
+  order: 3;
+  flex-basis: 100%;
+  justify-content: flex-end;
+  margin-top: 2px;
+  padding: 0;
 }
 
 .oc-message-assistant {
@@ -540,7 +578,7 @@
 .oc-message-actions {
   display: flex;
   gap: 2px;
-  justify-content: flex-end;
+  justify-content: flex-start;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s;
@@ -555,8 +593,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   border-radius: var(--oc-radius-sm);
   cursor: pointer;
   color: var(--text-muted);
@@ -576,60 +614,24 @@
 
 .oc-action-btn svg,
 .oc-action-btn .svg-icon {
-  width: 18px !important;
-  height: 18px !important;
-  stroke-width: 2px;
-}
-
-/* ============================================
-   Message Navigation Arrows — Claudian style
-   ============================================ */
-.oc-message-nav {
-  position: absolute;
-  right: 4px;
-  top: 4px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s;
-}
-
-.oc-message:hover .oc-message-nav {
-  opacity: 0.7;
-  pointer-events: auto;
-}
-
-.oc-message-nav:hover {
-  opacity: 1;
-}
-
-.oc-nav-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 4px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  padding: 0;
-  transition: color 0.15s, background 0.15s;
-}
-
-.oc-nav-btn:hover {
-  color: var(--text-normal);
-  background: var(--background-modifier-hover);
-}
-
-.oc-nav-btn svg,
-.oc-nav-btn .svg-icon {
   width: 16px !important;
   height: 16px !important;
   stroke-width: 2px;
+}
+
+/* Match Obsidian code block copy button size to our action buttons */
+.oc-message-content .copy-code-button {
+  width: 24px !important;
+  height: 24px !important;
+  padding: 0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.oc-message-content .copy-code-button svg,
+.oc-message-content .copy-code-button .svg-icon {
+  width: 16px !important;
+  height: 16px !important;
 }
 
 /* ============================================
@@ -681,7 +683,7 @@
    ============================================ */
 .oc-input-container {
   position: relative;
-  padding: 8px 4px 8px 4px;
+  padding: 4px 0 0 0;
   flex-shrink: 0;
 }
 
@@ -689,7 +691,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 72px;
+  min-height: 96px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--oc-radius);
   background: var(--background-primary);
@@ -724,9 +726,18 @@
   font-size: 12px;
   color: var(--text-muted);
   max-width: 200px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.oc-context-chip > span:first-child {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.oc-chip-remove {
+  flex-shrink: 0;
 }
 
 .oc-context-chip-icon {
@@ -756,9 +767,9 @@
 .oc-input {
   width: 100%;
   flex: 1 1 0;
-  min-height: 60px;
+  min-height: 96px;
   resize: none;
-  padding: 10px;
+  padding: 8px 10px;
   border: none !important;
   border-radius: var(--oc-radius);
   background: transparent !important;
@@ -836,6 +847,8 @@
 .oc-send-hint {
   font-size: 11px;
   color: var(--text-faint);
+  opacity: 0.6;
+  user-select: none;
 }
 
 /* ============================================
@@ -872,6 +885,119 @@
 
 .oc-status-insecure {
   color: var(--text-warning);
+}
+
+/* ============================================
+   Custom Commands Settings
+   ============================================ */
+.oc-custom-cmd-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.oc-custom-cmd-row {
+  display: grid;
+  grid-template-columns: 140px 1fr auto auto;
+  grid-template-rows: auto auto;
+  gap: 6px 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  align-items: start;
+}
+
+.oc-custom-cmd-name {
+  grid-column: 1;
+  grid-row: 1;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 13px;
+}
+
+.oc-custom-cmd-prompt {
+  grid-column: 2;
+  grid-row: 1 / 3;
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+}
+
+.oc-custom-cmd-toggles {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: center;
+}
+
+.oc-custom-cmd-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.oc-custom-cmd-toggle input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.oc-custom-cmd-del {
+  grid-column: 4;
+  grid-row: 1;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, background 0.15s;
+}
+
+.oc-custom-cmd-del:hover {
+  color: var(--text-error);
+  background: var(--background-modifier-error);
+}
+
+.oc-custom-cmd-add {
+  align-self: flex-start;
+  padding: 5px 12px;
+  border: 1px dashed var(--background-modifier-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.oc-custom-cmd-add:hover {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
 }
 
 /* Confirm modal */
@@ -1046,18 +1172,14 @@
    @ File Mention Popup
    ============================================ */
 .oc-mention-popup {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
+  position: fixed;
   max-height: 240px;
   overflow-y: auto;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--oc-radius);
   box-shadow: 0 -4px 16px rgba(0,0,0,0.15);
-  z-index: 100;
-  margin-bottom: 4px;
+  z-index: 9999;
 }
 
 .oc-mention-item {
@@ -1106,6 +1228,7 @@
   color: var(--text-faint);
   margin-left: 2px;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .oc-chip-remove:hover {
@@ -1128,6 +1251,16 @@
 
 .oc-selection-indicator .oc-context-chip-icon {
   color: var(--oc-brand);
+}
+
+/* CM6 selection highlight (persists after focus change) */
+.oc-selection-highlight {
+  background: rgba(var(--oc-brand-rgb), 0.2);
+  border-radius: 2px;
+}
+
+.theme-light .oc-selection-highlight {
+  background: rgba(var(--oc-brand-rgb), 0.15);
 }
 
 /* ============================================
@@ -1281,28 +1414,28 @@
 .oc-model-select {
   appearance: none;
   -webkit-appearance: none;
-  background: var(--background-secondary);
-  border: 1px solid var(--background-modifier-border);
+  background: transparent;
+  border: none;
   border-radius: var(--oc-radius-sm);
-  color: var(--text-muted);
+  color: var(--text-faint);
   font-size: 11px;
-  padding: 3px 20px 3px 8px;
+  padding: 4px 8px 4px 18px;
   cursor: pointer;
-  max-width: 110px;
+  max-width: 130px;
   outline: none;
-  transition: border-color 0.15s, color 0.15s;
+  transition: color 0.15s, background 0.15s;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 6px center;
+  background-position: left 4px center;
 }
 
 .oc-model-select:hover {
-  border-color: var(--interactive-accent);
   color: var(--text-normal);
+  background: var(--background-modifier-hover);
 }
 
 .oc-model-select:focus {
-  border-color: var(--interactive-accent);
+  color: var(--text-normal);
 }
 
 .oc-model-select option {
@@ -1320,7 +1453,7 @@
   padding: 6px 8px;
   margin: 4px 0;
   border: 1px solid var(--interactive-accent);
-  border-radius: var(--oc-radius);
+  border-radius: 6px;
   background: var(--background-primary);
   box-shadow: 0 2px 12px rgba(0,0,0,0.15);
   animation: oc-fadein 0.15s ease;
@@ -1340,11 +1473,33 @@
 }
 
 .oc-inline-input:focus {
-  border-color: var(--interactive-accent);
+  border: 1px solid var(--background-modifier-border-hover);
 }
 
 .oc-inline-input::placeholder {
   color: var(--text-faint);
+}
+
+.oc-inline-cancel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--oc-radius-sm);
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 16px;
+  cursor: pointer;
+  flex-shrink: 0;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.oc-inline-cancel:hover {
+  color: var(--text-error);
+  background: var(--background-modifier-hover);
 }
 
 .oc-inline-spinner {
@@ -1359,6 +1514,61 @@
 /* ============================================
    Inline Diff (Phase 2)
    ============================================ */
+.oc-inline-edit-textarea {
+  width: 100%;
+  min-height: 56px;
+  padding: 2px 0 6px 0;
+  border: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-normal);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  resize: none;
+  outline: none;
+}
+
+.oc-inline-edit-btnrow {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.oc-inline-edit-confirm {
+  padding: 4px 14px;
+  border-radius: 20px;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--interactive-accent);
+  color: white;
+  transition: opacity 0.15s;
+}
+
+.oc-inline-edit-confirm:hover {
+  opacity: 0.85;
+}
+
+.oc-inline-edit-cancel-btn {
+  padding: 4px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+  font-size: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.oc-inline-edit-cancel-btn:hover {
+  border-color: var(--text-muted);
+  color: var(--text-normal);
+}
+
 .oc-inline-diff-replace {
   margin: 4px 0;
   padding: 8px 10px;
@@ -1438,18 +1648,14 @@
    Slash Command Popup (Phase 2)
    ============================================ */
 .oc-slash-popup {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  right: 0;
+  position: fixed;
   max-height: 200px;
   overflow-y: auto;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--oc-radius);
   box-shadow: 0 -4px 16px rgba(0,0,0,0.15);
-  z-index: 100;
-  margin-bottom: 4px;
+  z-index: 9999;
 }
 
 .oc-slash-item {

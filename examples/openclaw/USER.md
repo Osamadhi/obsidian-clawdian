@@ -1,13 +1,53 @@
-# USER.md
+# USER.md - 用户偏好
 
-## Communication Preferences
+> 告诉 agent 你是谁、你怎么工作。这是 agent 理解你偏好的核心文件。
+> 按你的实际情况修改，填得越具体，agent 的输出越贴合你。
 
-- Solutions first, explanations after
-- Tables over paragraphs, one sentence over three
-- "OK" / "confirmed" = approved, go ahead
-- No flattery or small talk needed
+---
 
-## Vault Purpose
+## 沟通偏好
 
-Describe your vault's purpose here so the agent understands context:
-- Example: Personal knowledge base, work notes, research, etc.
+- **先方案后解释**：直接给结论，不要铺垫
+- **能表格不段落**，能一句不三句
+- **"好" / "确认" = 方案通过，执行**，不需要再次确认
+- 不需要恭维和客套
+- 语言：中文为主，技术术语保留英文
+
+---
+
+## 工作习惯
+
+> 告诉 agent 你的典型使用场景，帮助它预判你的意图。
+
+- （示例）我通常先写草稿，再让 AI 润色
+- （示例）读书笔记我喜欢摘录 + 自己的批注分开存
+- （示例）项目文档要有版本号和更新日期
+
+---
+
+## Vault 用途
+
+> 简述你的 Vault 是做什么的，让 agent 理解你的知识体系。
+
+（示例）这个 Vault 是我的个人知识库，涵盖：
+- 工作项目文档
+- 学习笔记
+- 日志与复盘
+- AI 产出内容存档
+
+---
+
+## 输出偏好
+
+- 摘要：先给 3 条核心结论，再展开
+- 对比内容：用表格
+- 步骤类内容：用有序列表
+- 代码：带语言标注的代码块
+
+---
+
+## 不希望 agent 做的事
+
+- 不要在我没问的情况下修改文件
+- 不要删除文件（除非我明确说"删掉"）
+- 不要改变文件名格式

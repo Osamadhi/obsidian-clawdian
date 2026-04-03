@@ -5,6 +5,6 @@
   "minAppVersion": "1.0.0",
   "description": "AI chat assistant for Obsidian with streaming responses, thinking display, @ file mentions, inline edit, slash commands, and full vault integration. Works with any OpenAI-compatible API.",
   "author": "Zorba",
-  "authorUrl": "https://github.com/nicekate",
+  "authorUrl": "https://github.com/Osamadhi",
   "isDesktopOnly": true
 }

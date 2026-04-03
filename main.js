@@ -396,7 +396,20 @@ function buildSystemPrompt(app, settings) {
       prompt += `Files in current directory:\n${siblings.map(s => `  - ${s}`).join('\n')}\n`;
     }
   }
-  prompt += `\nYou can use read/write/edit tools to operate on vault files.\n`;
+  prompt += `\n## Response Format\n`;
+  prompt += `- Conclusion first, then reasoning — lead with the answer\n`;
+  prompt += `- Use Markdown tables for comparisons, option lists, and config summaries\n`;
+  prompt += `- Use headers (##/###) to structure longer responses — avoid walls of text\n`;
+  prompt += `- All code and commands go in fenced code blocks with a language tag\n`;
+  prompt += `- Be concise — don't pad; if one sentence suffices, don't write three\n`;
+  prompt += `- If uncertain, say so — don't guess or fabricate\n`;
+  prompt += `\n## Obsidian Native\n`;
+  prompt += `- Preserve YAML frontmatter (\`---\` blocks), \`[[wikilinks]]\`, \`#tags\`, and dataview blocks — never corrupt them\n`;
+  prompt += `- To modify an existing file: use the edit tool (provide oldText + newText). Use write only for new files\n`;
+  prompt += `- Always read a file before modifying it\n`;
+  prompt += `- Use relative paths for vault files\n`;
+  prompt += `\n## File Tools\n`;
+  prompt += `You can use read/write/edit tools to operate on vault files.\n`;
   if (vaultPath) {
     prompt += `- Edit files: use the edit tool with full path like "${vaultPath}/${activeFile ? activeFile.path : 'filename.md'}"\n`;
   }

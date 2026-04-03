@@ -26,6 +26,236 @@ var cm_state = require("@codemirror/state");
 var cm_view = require("@codemirror/view");
 
 // ============================================
+// Built-in Vault Search (embedded from vault_search.js)
+// Zero dependencies — works without vault_search.py
+// ============================================
+
+const _VS_STOP_WORDS = new Set([
+  '的','了','在','是','我','有','和','就','不','人','都','一','一个','上','也','很',
+  '到','说','要','去','你','会','着','没有','看','好','自己','这','他','她','它','们',
+  '那','被','从','把','让','用','为','什么','怎么','如何','可以','这个','那个',
+  '但是','因为','所以','如果','虽然','已经','还是','或者','以及','关于','通过',
+  '进行','可能','需要','应该',
+  'the','a','an','is','are','was','were','be','been','have','has','had',
+  'do','does','did','will','would','could','should','may','might','can',
+  'i','you','he','she','it','we','they','me','him','her',
+  'of','in','to','for','with','on','at','from','by','and','or','but','not','if',
+]);
+
+const _VS_CN_BREAKS = new Set([
+  '的','了','在','是','和','与','或','也','都','把','被','让','给','从','到','向',
+  '对','跟','比','而','但','又','还','就','才','却','只','很','太','更','最',
+  '不','没','别','吗','呢','吧','啊','哦','嘛','呀','哈','嗯',
+  '什么','怎么','如何','哪里','哪个','为什么','怎样',
+  '时','时候','以后','之后','之前','以前','中',
+]);
+
+const _VS_CN_COMPOUNDS = new Set([
+  '怎么办','怎么样','什么样','为什么','怎么做','怎么说',
+  '是不是','能不能','会不会','有没有','好不好','行不行',
+  '不知道','不一样','不应该','不可以',
+]);
+
+const _VS_SYNONYMS = {
+  '老婆': ['妻','妻子','夫人','太太','媳妇','爱人','爱妻','内人'],
+  '妻子': ['妻','老婆','夫人','太太','媳妇','爱人','爱妻'],
+  '老公': ['丈夫','夫','先生','爱人','夫君'],
+  '丈夫': ['老公','夫','先生','爱人','夫君'],
+  '孩子': ['儿子','女儿','子女','儿女','小孩'],
+  '儿子': ['孩子','男孩','子','孩儿'],
+  '女儿': ['孩子','女孩','闺女'],
+  '父亲': ['爸爸','父','老爸','家父','爹'],
+  '母亲': ['妈妈','母','老妈','家母','娘'],
+  '父母': ['爸妈','双亲','爹娘'],
+  '老师': ['师父','师傅','导师','教师','先生','夫子'],
+  '师父': ['老师','师傅','导师','先生'],
+  '学生': ['弟子','徒弟','门生','学员'],
+  '结婚': ['成婚','婚姻','娶妻','成家','嫁'],
+  '离婚': ['分手','离异'],
+  '朋友': ['好友','友人','伙伴','同伴'],
+  '工作': ['上班','职业','事业','职位'],
+  '学习': ['读书','研究','进修','修行'],
+  '问题': ['困惑','疑问','疑惑','麻烦'],
+  '方法': ['方式','办法','手段','途径'],
+};
+
+function _vsEscapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function _vsSplitByCnBreaks(text) {
+  const results = [];
+  let current = '';
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    let compoundMatch = false;
+    if (i + 2 < text.length) {
+      const three = text.slice(i, i + 3);
+      if (_VS_CN_COMPOUNDS.has(three)) {
+        if (current.length >= 2) results.push({ text: current, breakAfter: null });
+        current = ''; results.push({ text: three, breakAfter: null });
+        i += 2; compoundMatch = true;
+      }
+    }
+    if (compoundMatch) continue;
+    let broke = false;
+    if (i + 1 < text.length) {
+      const two = text.slice(i, i + 2);
+      if (_VS_CN_BREAKS.has(two)) {
+        if (current.length >= 2) results.push({ text: current, breakAfter: two });
+        current = ''; i++; broke = true;
+      }
+    }
+    if (!broke) {
+      if (_VS_CN_BREAKS.has(char)) {
+        if (current.length >= 2) results.push({ text: current, breakAfter: char });
+        current = '';
+      } else { current += char; }
+    }
+  }
+  if (current.length >= 2) results.push({ text: current, breakAfter: null });
+  return results;
+}
+
+function _vsExtractKeywords(query) {
+  const keywords = new Set();
+  const chineseSegs = query.trim().match(/[\u4e00-\u9fff]+/g) || [];
+  const englishWords = query.trim().match(/[a-zA-Z]{2,}/g) || [];
+
+  for (const seg of chineseSegs) {
+    if (seg.length >= 2 && seg.length <= 8) keywords.add(seg);
+    for (const { text, breakAfter } of _vsSplitByCnBreaks(seg)) {
+      if (text.length >= 2 && !_VS_STOP_WORDS.has(text)) {
+        keywords.add(text);
+        if (text.length >= 4) {
+          const h = text.slice(0, 2), t = text.slice(-2);
+          if (!_VS_STOP_WORDS.has(h)) keywords.add(h);
+          if (!_VS_STOP_WORDS.has(t)) keywords.add(t);
+        }
+        if (breakAfter && text.length + breakAfter.length <= 6) keywords.add(text + breakAfter);
+      }
+    }
+  }
+  for (const w of englishWords) {
+    if (!_VS_STOP_WORDS.has(w.toLowerCase())) keywords.add(w);
+  }
+
+  const primary = [...keywords].sort((a, b) => b.length - a.length).slice(0, 8);
+  const expanded = [...primary];
+  const seen = new Set(primary.map(w => w.toLowerCase()));
+  for (const kw of primary) {
+    for (const syn of (_VS_SYNONYMS[kw] || [])) {
+      if (!seen.has(syn.toLowerCase())) { expanded.push(syn); seen.add(syn.toLowerCase()); }
+    }
+  }
+  return expanded;
+}
+
+function _vsJsSearch(lines, searchTerms) {
+  const hitLines = new Map();
+  const patterns = searchTerms.map(t => ({ term: t, re: new RegExp(_vsEscapeRe(t), 'i') }));
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length > 2000) continue;
+    for (const { term, re } of patterns) {
+      if (re.test(line)) {
+        if (!hitLines.has(i)) hitLines.set(i, new Set());
+        hitLines.get(i).add(term);
+      }
+    }
+  }
+  return hitLines;
+}
+
+function _vsBuildRegions(hitLines, totalLines, contextLines) {
+  if (hitLines.size === 0) return [];
+  const sortedHits = [...hitLines.keys()].sort((a, b) => a - b);
+  const raw = [];
+  let rStart = sortedHits[0], rEnd = sortedHits[0];
+  let rKws = new Set(hitLines.get(sortedHits[0])), rHits = 1;
+  for (let i = 1; i < sortedHits.length; i++) {
+    const idx = sortedHits[i];
+    if (idx - rEnd <= contextLines) {
+      rEnd = idx; for (const kw of hitLines.get(idx)) rKws.add(kw); rHits++;
+    } else {
+      raw.push({ start: rStart, end: rEnd, keywords: rKws, hitCount: rHits });
+      rStart = idx; rEnd = idx; rKws = new Set(hitLines.get(idx)); rHits = 1;
+    }
+  }
+  raw.push({ start: rStart, end: rEnd, keywords: rKws, hitCount: rHits });
+  return raw.map(r => {
+    const ctxStart = Math.max(0, r.start - contextLines);
+    const ctxEnd = Math.min(totalLines - 1, r.end + contextLines);
+    const span = ctxEnd - ctxStart + 1;
+    const sizePenalty = span > 200 ? 0.3 : span > 100 ? 0.6 : 1.0;
+    const score = (r.keywords.size * r.keywords.size * 5 + (r.hitCount / span) * 10) * sizePenalty;
+    return { start: ctxStart, end: ctxEnd, keywords: r.keywords, hitCount: r.hitCount, score };
+  }).sort((a, b) => b.score - a.score);
+}
+
+function _vsFindHeadings(lines, lineIdx) {
+  let h1 = null, h2 = null;
+  for (let i = lineIdx; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!h2 && /^## /.test(line)) h2 = line.replace(/^## +/, '');
+    if (!h1 && /^# /.test(line) && !/^## /.test(line)) h1 = line.replace(/^# +/, '');
+    if (h1 && h2) break;
+    if (lineIdx - i > 500) break;
+  }
+  if (h1 && h2) return `📖 ${h1} > 📑 ${h2}`;
+  if (h1) return `📖 ${h1}`;
+  if (h2) return `📑 ${h2}`;
+  return null;
+}
+
+/**
+ * 内嵌大文件搜索 — 在已读入内容上直接搜索，无需 vault_search.py
+ * @param {string} content 文件全文
+ * @param {string} query 用户查询
+ * @returns {string|null} 格式化搜索结果，无结果返回 null
+ */
+function builtinVaultSearch(content, query) {
+  const CONTEXT_LINES = 15;
+  const MAX_CHARS = 15000;
+  const MAX_PARA_CHARS = 3000;
+  const MAX_RESULTS = 8;
+
+  const lines = content.split('\n');
+  const searchTerms = _vsExtractKeywords(query);
+  if (searchTerms.length === 0) return null;
+
+  const hitLines = _vsJsSearch(lines, searchTerms);
+  if (hitLines.size === 0) return null;
+
+  const regions = _vsBuildRegions(hitLines, lines.length, CONTEXT_LINES);
+  if (regions.length === 0) return null;
+
+  const header = `搜索「${query}」关键词：${searchTerms.slice(0, 6).join('、')} | 找到 ${regions.length} 处相关段落\n`;
+  const parts = [header];
+  let totalChars = header.length;
+  let shown = 0;
+
+  for (const region of regions) {
+    if (shown >= MAX_RESULTS) break;
+    let text = lines.slice(region.start, region.end + 1).join('\n');
+    if (text.length > MAX_PARA_CHARS) text = text.slice(0, MAX_PARA_CHARS) + '\n…（截断）';
+    const heading = _vsFindHeadings(lines, region.start);
+    const block = [
+      '─'.repeat(50),
+      `【段落 ${shown + 1}】${heading ? heading + ' | ' : ''}行 ${region.start + 1}–${region.end + 1} | 命中：${[...region.keywords].join('、')}`,
+      '─'.repeat(50),
+      text, ''
+    ].join('\n');
+    if (totalChars + block.length > MAX_CHARS && shown > 0) break;
+    parts.push(block);
+    totalChars += block.length;
+    shown++;
+  }
+
+  return parts.join('\n');
+}
+
+// ============================================
 // SecureStorage (preserved from v0.4.1)
 // ============================================
 var safeStorage = null;
@@ -2325,11 +2555,17 @@ var ClawdianView = class extends import_obsidian.ItemView {
         try {
           const fileContent = await this.app.vault.read(file);
           if (fileContent.length > LARGE_FILE_THRESHOLD) {
-            // Large file: give model path + size, let it use rg to search
             const fullPath = vaultPath ? vaultPath + '\\' + file.path.replace(/\//g, '\\') : file.path;
             const charCount = fileContent.length;
             const lineCount = fileContent.split('\n').length;
-            contextParts.push(`[Large file: ${file.path}] (${charCount} chars, ${lineCount} lines)\nFull path: ${fullPath}\nUse rg (ripgrep) to search this file for relevant content. Do NOT try to read the entire file.`);
+            // Built-in search: search the content directly, no vault_search.py needed
+            const searchResult = builtinVaultSearch(fileContent, content);
+            if (searchResult) {
+              contextParts.push(`[Large file searched: ${file.path}] (${charCount} chars total)\n${searchResult}`);
+            } else {
+              // Fallback: let AI use rg
+              contextParts.push(`[Large file: ${file.path}] (${charCount} chars, ${lineCount} lines)\nFull path: ${fullPath}\nBuilt-in search found no matches. Use rg to search: rg -i -F -C 5 "keyword" "${fullPath}"`);
+            }
           } else {
             // Normal file: inline content
             contextParts.push(`[Attached: ${file.path}]\n\`\`\`\n${fileContent}\n\`\`\``);
@@ -2359,7 +2595,12 @@ var ClawdianView = class extends import_obsidian.ItemView {
               if (noteContent.length > LARGE_FILE_THRESHOLD) {
                 const cvaultPath = getVaultBasePath(this.app);
                 const fullPath = cvaultPath ? cvaultPath + '\\' + activeFile.path.replace(/\//g, '\\') : activeFile.path;
-                contextParts.push(`[Current note: ${activeFile.path}] (${noteContent.length} chars, large file)\nFull path: ${fullPath}\nUse rg (ripgrep) to search this file for relevant content. Do NOT try to read the entire file.`);
+                const searchResult = builtinVaultSearch(noteContent, content);
+                if (searchResult) {
+                  contextParts.push(`[Current note searched: ${activeFile.path}] (${noteContent.length} chars total)\n${searchResult}`);
+                } else {
+                  contextParts.push(`[Current note: ${activeFile.path}] (${noteContent.length} chars, large file)\nFull path: ${fullPath}\nBuilt-in search found no matches. Use rg to search: rg -i -F -C 5 "keyword" "${fullPath}"`);
+                }
               } else {
                 contextParts.push(`[Currently viewing: ${activeFile.path}]\n\`\`\`\n${noteContent}\n\`\`\``);
               }
